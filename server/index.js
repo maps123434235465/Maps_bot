@@ -1,5 +1,6 @@
 const express = require("express");
 const crypto = require("crypto");
+const path = require("path");
 const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
 const { generateWorld, typeOf, COLS, ROWS } = require("./worldgen");
@@ -164,7 +165,6 @@ app.get(/^\/(?!api|health|files).*/, (req, res) => {
 
 app.use(express.json({ limit: "2mb" }));
 
-const path = require("path");
 app.use("/files", express.static(path.join(__dirname, "servers"), { maxAge: "7d" }));
 
 app.get("/health", (req, res) => res.send("ok"));
