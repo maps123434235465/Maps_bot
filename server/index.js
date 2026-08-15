@@ -154,7 +154,18 @@ function auth(req, res, next) {
 
 // ===== EXPRESS =====
 const app = express();
+
+// Раздача собранного мини-аппа
+app.use(express.static(path.join(__dirname, "static"), { maxAge: "1d" }));
+// SPA fallback — все неизвестные маршруты → index.html
+app.get(/^\/(?!api|health|files).*/, (req, res) => {
+  res.sendFile(path.join(__dirname, "static", "index.html"));
+});
+
 app.use(express.json({ limit: "2mb" }));
+
+const path = require("path");
+app.use("/files", express.static(path.join(__dirname, "servers"), { maxAge: "7d" }));
 
 app.get("/health", (req, res) => res.send("ok"));
 
