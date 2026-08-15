@@ -1,7 +1,4 @@
-// Детерминированная генерация мира. ВАЖНО: константы и формулы должны
-// совпадать с клиентом, иначе карта в мини-аппе не совпадёт с серверной.
-const fs = require("fs"), path = require("path");
-
+// Детерминированная генерация. Одинаковый результат каждый запуск.
 const COLS = 800, ROWS = 600;
 const TYPE_CH = { meadow: "m", forest: "f", hills: "h", field: "p", swamp: "w", mountain: "x" };
 const CH_TYPE = Object.fromEntries(Object.entries(TYPE_CH).map(([k, v]) => [v, k]));
@@ -40,6 +37,7 @@ const baseElev = (type, row, col) => {
     default:       return 0.10 + n1 * 0.16 + n2 * 0.06;
   }
 };
+
 function buildMasses() {
   const arr = [];
   for (let i = 0; i < 30; i++) {
@@ -94,25 +92,10 @@ function generateWorld() {
   return { v: 1, cols: COLS, rows: ROWS, createdAt: Date.now(), types: types.join(""), elev };
 }
 
-function loadOrCreate(dataDir) {
-  fs.mkdirSync(dataDir, { recursive: true });
-  const file = path.join(dataDir, "world.json");
-  if (fs.existsSync(file)) {
-    const w = JSON.parse(fs.readFileSync(file, "utf8"));
-    console.log(`🗺️  Мир загружен из сейва (${w.cols}x${w.rows})`);
-    return w;
-  }
-  console.log("🗺️  Генерируем новый мир...");
-  const w = generateWorld();
-  fs.writeFileSync(file, JSON.stringify(w));
-  console.log(`🗺️  Мир сохранён: ${file}`);
-  return w;
-}
-
 const typeOf = (world, tileId) => {
   const [r, c] = tileId.split("_").map(Number);
   if (r < 0 || r >= world.rows || c < 0 || c >= world.cols) return null;
   return CH_TYPE[world.types[r * world.cols + c]];
 };
 
-module.exports = { loadOrCreate, typeOf, COLS, ROWS };
+module.exports = { generateWorld, typeOf, COLS, ROWS };
