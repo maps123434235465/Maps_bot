@@ -1,8 +1,6 @@
-// Детерминированная генерация. Одинаковый результат каждый запуск.
 const COLS = 800, ROWS = 600;
 const TYPE_CH = { meadow: "m", forest: "f", hills: "h", field: "p", swamp: "w", mountain: "x", water: "o" };
 const CH_TYPE = Object.fromEntries(Object.entries(TYPE_CH).map(([k, v]) => [v, k]));
-
 const hash2 = (r, c, salt = 0) => {
   let x = (r * 374761393 + c * 668265263 + salt * 69069) | 0;
   x = (x ^ (x >>> 13)) * 1274126177;
@@ -18,8 +16,6 @@ const vnoise = (r, c, scale, salt) => {
   return h(r0, c0) * (1 - sr) * (1 - sc) + h(r0 + 1, c0) * sr * (1 - sc)
        + h(r0, c0 + 1) * (1 - sr) * sc + h(r0 + 1, c0 + 1) * sr * sc;
 };
-
-// Органичная береговая линия: материк «кляксой», углы и края — море
 const isLand = (row, col) => {
   const nx = (col - COLS / 2) / (COLS / 2);
   const nz = (row - ROWS / 2) / (ROWS / 2);
@@ -27,7 +23,6 @@ const isLand = (row, col) => {
   const n = (vnoise(row, col, 64, 777) - 0.5) * 0.55 + (vnoise(row, col, 23, 778) - 0.5) * 0.25;
   return d + n < 0.92;
 };
-
 const baseType = (row, col) => {
   const a = h01(row, col, 10), b = h01(row, col, 22);
   if (a < 0.11) return "forest";
@@ -56,7 +51,6 @@ function buildMasses() {
       ang: ((hash2(i, 11, 902) % 1000) / 1000) * Math.PI,
       rAlong:  ridge ? 28 + (hash2(i, 13, 903) % 48) : 13 + (hash2(i, 13, 903) % 15),
       rAcross: ridge ? 7 + (hash2(i, 17, 904) % 8)   : 11 + (hash2(i, 17, 904) % 16),
-      // ГОРЫ ВЫШЕ: пики 1.6..3.5
       peak: (ridge ? 1.9 : 1.6) + ((hash2(i, 19, 905) % 100) / 100) * (ridge ? 1.6 : 1.4),
       lobes: 2 + (hash2(i, 23, 906) % 4),
       phase: ((hash2(i, 29, 907) % 1000) / 1000) * Math.PI * 2

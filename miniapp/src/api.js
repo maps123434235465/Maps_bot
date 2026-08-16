@@ -1,7 +1,6 @@
 const TG = window.Telegram?.WebApp;
 try { TG?.ready(); TG?.expand(); } catch {}
 const initData = TG?.initData || "";
-
 async function req(path, body) {
   const isGet = !body;
   const url = isGet ? `${path}?initData=${encodeURIComponent(initData)}` : path;
