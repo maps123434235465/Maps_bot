@@ -71,7 +71,6 @@ function scanServers() {
 }
 let CARDS = scanServers();
 for (const [s, cards] of Object.entries(CARDS)) console.log(`📦 Сервер "${s}": карточек — ${cards.length}`);
-loadCards();
 
 // ===== СОЗДАНИЕ ПРОФИЛЯ =====
 function newProfile(user) {
