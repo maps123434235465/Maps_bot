@@ -16,10 +16,9 @@ async function req(path, body) {
 export const api = {
   init:   () => req("/api/init"),
   state:  () => req("/api/state"),
+  tops:   () => req("/api/tops"),
   attack: (tileId, unitId) => req("/api/attack", { tileId, unitId }),
   build:  (tileId, building) => req("/api/build", { tileId, building }),
-  openCase: server => req("/api/case/open", { server }),
-  place:  (unitId, tileId) => req("/api/place", { unitId, tileId }),
-  move:   (unitId, tileId) => req("/api/move", { unitId, tileId })
+  openCase: server => req("/api/case/open", { server })
 };
 export const unitImg = u => `/files/${encodeURIComponent(u.server)}/${encodeURIComponent(u.file)}`;

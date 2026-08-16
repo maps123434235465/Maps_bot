@@ -96,7 +96,6 @@ function settle(p) {
     p.tickTs += mins * 60000;
   }
 }
-const unitPower = u => Math.max(u.air, u.ground);
 function publicProfile(p) {
   return {
     id: p.id, name: p.name, coins: p.coins, supplies: p.supplies, supplyMax: SUPPLY_MAX,
@@ -105,16 +104,17 @@ function publicProfile(p) {
   };
 }
 async function overlay(meId) {
-  const owners = {}, buildings = {}, units = [];
+  const owners = {}, buildings = {}, units = [], names = {};
   const { data } = await sb.from("players").select("id, data");
   for (const row of (data || [])) {
     const p = row.data;
     const who = p.id === meId ? "me" : "p" + p.id;
+    names[who] = p.name;
     for (const t of (p.owned || [])) owners[t] = who;
     for (const [t, b] of Object.entries(p.buildings || {})) buildings[t] = { b, own: who };
     for (const u of (p.units || [])) if (u.pos) units.push({ uid: u.uid, tileId: u.pos, own: who, name: u.name, file: u.file, server: u.server });
   }
-  return { owners, buildings, units };
+  return { owners, buildings, units, names };
 }
 async function ownerOf(tileId) {
   const { data } = await sb.from("players").select("id, data");
@@ -161,6 +161,25 @@ app.get("/api/state", auth, async (req, res) => {
   const p = req.profile; settle(p); await saveProfile(p);
   res.json({ ok: true, profile: publicProfile(p), ...(await overlay(p.id)) });
 });
+
+const unitPower = u => Math.max(u.air, u.ground);
+function powerOf(p) {
+  let s = 0;
+  for (const id of (p.owned || [])) {
+    s += 10 * (TERRAIN_DEF[typeOf(world, id)] || 1);
+    const b = (p.buildings || {})[id];
+    if (b === "fort") s += 35; else if (b) s += 5;
+  }
+  for (const u of (p.units || [])) s += unitPower(u) * 5;
+  return Math.round(s);
+}
+app.get("/api/tops", auth, async (req, res) => {
+  const { data } = await sb.from("players").select("data");
+  const rows = (data || []).map(r => r.data);
+  const mk = f => rows.map(p => ({ n: p.name, v: f(p) })).sort((a, b) => b.v - a.v).slice(0, 10);
+  res.json({ ok: true, coins: mk(p => Math.round(p.coins || 0)), cards: mk(p => (p.units || []).length), power: mk(p => powerOf(p)) });
+});
+
 app.post("/api/case/open", auth, async (req, res) => {
   const p = req.profile; settle(p);
   const pool = CARDS[req.body.server];

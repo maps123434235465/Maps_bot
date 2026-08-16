@@ -17,8 +17,7 @@ const vnoise = (r, c, scale, salt) => {
        + h(r0, c0 + 1) * (1 - sr) * sc + h(r0 + 1, c0 + 1) * sr * sc;
 };
 const isLand = (row, col) => {
-  const nx = (col - COLS / 2) / (COLS / 2);
-  const nz = (row - ROWS / 2) / (ROWS / 2);
+  const nx = (col - COLS / 2) / (COLS / 2), nz = (row - ROWS / 2) / (ROWS / 2);
   const d = Math.sqrt(nx * nx + nz * nz);
   const n = (vnoise(row, col, 64, 777) - 0.5) * 0.55 + (vnoise(row, col, 23, 778) - 0.5) * 0.25;
   return d + n < 0.92;
@@ -46,14 +45,12 @@ function buildMasses() {
   for (let i = 0; i < 30; i++) {
     const ridge = i < 16;
     arr.push({
-      sr: 18 + (hash2(i, 3, 900) % (ROWS - 36)),
-      sc: 18 + (hash2(i, 7, 901) % (COLS - 36)),
+      sr: 18 + (hash2(i, 3, 900) % (ROWS - 36)), sc: 18 + (hash2(i, 7, 901) % (COLS - 36)),
       ang: ((hash2(i, 11, 902) % 1000) / 1000) * Math.PI,
-      rAlong:  ridge ? 28 + (hash2(i, 13, 903) % 48) : 13 + (hash2(i, 13, 903) % 15),
-      rAcross: ridge ? 7 + (hash2(i, 17, 904) % 8)   : 11 + (hash2(i, 17, 904) % 16),
+      rAlong: ridge ? 28 + (hash2(i, 13, 903) % 48) : 13 + (hash2(i, 13, 903) % 15),
+      rAcross: ridge ? 7 + (hash2(i, 17, 904) % 8) : 11 + (hash2(i, 17, 904) % 16),
       peak: (ridge ? 1.9 : 1.6) + ((hash2(i, 19, 905) % 100) / 100) * (ridge ? 1.6 : 1.4),
-      lobes: 2 + (hash2(i, 23, 906) % 4),
-      phase: ((hash2(i, 29, 907) % 1000) / 1000) * Math.PI * 2
+      lobes: 2 + (hash2(i, 23, 906) % 4), phase: ((hash2(i, 29, 907) % 1000) / 1000) * Math.PI * 2
     });
   }
   return arr;
