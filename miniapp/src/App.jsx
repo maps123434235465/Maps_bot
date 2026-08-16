@@ -212,7 +212,7 @@ function createInstancedSet(scene, arr, allTiles) {
     side.instanceMatrix.needsUpdate = true;
     for (let i = 0; i < n; i++) {
       const t = items[i], p = toXZ(t.col, t.row);
-      dummy.position.set(p.x, BASE_H + t.elev + TOP_THICK / 2, p.z);
+      dummy.position.set(p.x, t.type === "water" ? -0.05 : BASE_H + t.elev + TOP_THICK / 2, p.z);
       dummy.scale.set(1, TOP_THICK, 1); dummy.updateMatrix();
       top.setMatrixAt(i, dummy.matrix);
       byId[t.id] = { idx: i, top, side, sideIdx: sideIdx.get(t.id) };
@@ -234,7 +234,7 @@ function createFarChunk(scene, tilesAll, cr, cc) {
   top.frustumCulled = false;
   arr.forEach((t, i) => {
     const p = toXZ(t.col, t.row);
-    dummy.position.set(p.x, BASE_H + t.elev + TOP_THICK / 2 - 0.045, p.z);
+    dummy.position.set(p.x, t.type === "water" ? -0.05 : BASE_H + t.elev + TOP_THICK / 2 - 0.045, p.z);
     dummy.scale.set(1, TOP_THICK, 1); dummy.updateMatrix();
     top.setMatrixAt(i, dummy.matrix);
   });
@@ -372,11 +372,11 @@ function createAnimatedOcean() {
       uTime: { value: 0 }, uColor: { value: new THREE.Color(0x0e3d55) }, uDeep: { value: new THREE.Color(0x092a3c) },
       uFogColor: { value: new THREE.Color(FOG_COLOR) }, uFogNear: { value: FOG_NEAR }, uFogFar: { value: FOG_FAR }
     },
-    vertexShader: `uniform float uTime; varying float vWave; varying float vDepth; void main(){ vec3 p=position; float w=sin(p.x*0.020+uTime*0.60)*0.30+cos(p.y*0.026-uTime*0.42)*0.24+sin((p.x+p.y)*0.011+uTime*0.30)*0.16; p.z+=w; vWave=w; vec4 mv=modelViewMatrix*vec4(p,1.0); vDepth=-mv.z; gl_Position=projectionMatrix*mv; }`,
+    vertexShader: `uniform float uTime; varying float vWave; varying float vDepth; void main(){ vec3 p=position; float w=sin(p.x*0.020+uTime*0.60)*0.22+cos(p.y*0.026-uTime*0.42)*0.18+sin((p.x+p.y)*0.011+uTime*0.30)*0.10; p.z+=w; vWave=w; vec4 mv=modelViewMatrix*vec4(p,1.0); vDepth=-mv.z; gl_Position=projectionMatrix*mv; }`,
     fragmentShader: `uniform vec3 uColor; uniform vec3 uDeep; uniform vec3 uFogColor; uniform float uFogNear; uniform float uFogFar; varying float vWave; varying float vDepth; void main(){ float k=clamp((vWave+0.70)/1.40,0.0,1.0); vec3 c=mix(uDeep,uColor,k); c+=vec3(0.05,0.08,0.09)*pow(k,3.0); float f=smoothstep(uFogNear,uFogFar,vDepth); c=mix(c,uFogColor,f); gl_FragColor=vec4(c,1.0); }`
   });
   const mesh = new THREE.Mesh(geo, m);
-  mesh.rotation.x = -Math.PI / 2; mesh.position.y = -0.75;
+  mesh.rotation.x = -Math.PI / 2; mesh.position.y = -0.95;
   return mesh;
 }
 
@@ -479,8 +479,9 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       for (const chunk of r.farChunks.values()) recolorFar(chunk, d.reachable, d.selectedId);
     };
     const processChunkQueue = () => {
+      const burst = r.farBurst; r.farBurst = false;
       r.farQueue.sort((a, b) => chunkDist(a) - chunkDist(b));
-      let bf = 3;
+      let bf = burst ? 90 : 6;
       while (bf-- && r.farQueue.length) {
         const key = r.farQueue.shift();
         if (!r.farWanted.has(key) || r.farChunks.has(key)) continue;
@@ -489,7 +490,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       }
       if (!r.farMode) {
         r.chunkQueue.sort((a, b) => chunkDist(a) - chunkDist(b));
-        let bd = 2;
+        let bd = burst ? 40 : 3;
         while (bd-- && r.chunkQueue.length) {
           const key = r.chunkQueue.shift();
           if (!r.chunkWanted.has(key) || r.chunks.has(key)) continue;
@@ -516,8 +517,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       r.dist += (r.distTarget - r.dist) * 0.15;
       r.pitch = clamp(autoPitch(r.dist) + (r.pitchOff || 0), 0.92, 1.55);
       updateCameraPose();
-      if (!r.farMode && r.dist > 280) { r.farMode = true; r.refreshChunks(); }
-      else if (r.farMode && r.dist < 240) { r.farMode = false; r.refreshChunks(); }
+      if (!r.farMode && r.dist > 280) { r.farMode = true; r.farBurst = true; r.refreshChunks(); }
+      else if (r.farMode && r.dist < 240) { r.farMode = false; r.farBurst = true; r.refreshChunks(); }
       if (Math.abs(r.dist - lastDist) > 0.5 || Math.abs(r.targetX - lastX) > CHUNK_TILES * TILE * 0.2 || Math.abs(r.targetZ - lastZ) > CHUNK_TILES * TILE * 0.2) {
         lastX = r.targetX; lastZ = r.targetZ; lastDist = r.dist;
         r.refreshChunks();
