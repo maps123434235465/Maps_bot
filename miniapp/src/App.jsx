@@ -426,7 +426,7 @@ function createAnimatedOcean() {
 }
 
 // ================= 3D-ЭКРАН (перспективная камера) =================
-function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev, borders }) {
+function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev, borders, reach }) {
   const mountRef = useRef(null), R = useRef({});
   const dataRef = useRef({ territories, onSelect, selectedId, reachable, onReady, onProgress });
   useEffect(() => { dataRef.current = { territories, onSelect, selectedId, reachable, onReady, onProgress }; });
@@ -609,6 +609,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
         r.ocean.material.uniforms.uTime.value = performance.now() * 0.001;
       if (r.selection.visible)
         r.selection.material.opacity = 0.10 + 0.07 * Math.sin(performance.now() * 0.004);
+      if (r.reachMesh)
+        r.reachMesh.material.opacity = 0.14 + 0.12 * Math.sin(performance.now() * 0.0035);
 
       frames++;
       if (frames % 30 === 0) {
@@ -690,6 +692,30 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.borderMesh = m;
   }, [borders]);
 
+    // мягко пульсирующая подсветка клеток, которые можно захватить
+  useEffect(() => {
+    const r = R.current;
+    if (!r.scene) return;
+    if (r.reachMesh) { r.scene.remove(r.reachMesh); r.reachMesh.dispose(); r.reachMesh = null; }
+    if (!reach || !reach.length) return;
+    if (!r.reachGeo) r.reachGeo = new THREE.PlaneGeometry(TILE - 0.25, TILE - 0.25);
+    if (!r.reachMat) r.reachMat = new THREE.MeshBasicMaterial({
+      color: 0xaef7a0, transparent: true, opacity: 0.2,
+      depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending
+    });
+    const m = new THREE.InstancedMesh(r.reachGeo, r.reachMat, reach.length);
+    const d = new THREE.Object3D();
+    reach.forEach((q, i) => {
+      d.position.set(q.x, q.y, q.z);
+      d.rotation.x = -Math.PI / 2;
+      d.updateMatrix();
+      m.setMatrixAt(i, d.matrix);
+    });
+    m.instanceMatrix.needsUpdate = true;
+    r.scene.add(m);
+    r.reachMesh = m;
+  }, [reach]);
+
   // управление: панорама учитывает поворот камеры (не инвертируется)
   useEffect(() => {
     const mount = mountRef.current, r = R.current;
@@ -714,8 +740,9 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     const zoomBy = f => { r.distTarget = clamp(r.distTarget / f, MIN_D, MAX_D); clampTarget(); };
 
     if (controlsRef) {
-      controlsRef.current = {
+        controlsRef.current = {
         zoomBy,
+        focus: (x, z) => { r.panTargetX = x; r.panTargetZ = z; },
         resetView: () => {
           r.panTargetX = 0; r.panTargetZ = 0; r.distTarget = START_D;
           r.yaw = 0.32; r.pitchOff = 0; r.updateCameraPose();
@@ -1150,6 +1177,17 @@ export default function App() {
     return out;
   }, [territories, rev]);
 
+  const reachList = useMemo(() => {
+    if (!territories) return [];
+    const out = [];
+    for (const t of territories) {
+      if (!reachable.has(t.id)) continue;
+      const p = toXZ(t.col, t.row);
+      out.push({ x: p.x, z: p.z, y: tileTop(t) + 0.05 });
+    }
+    return out;
+  }, [territories, reachable, rev]);
+
   const freePlace = !!profile && profile.owned.length === 0;
 
   const doAttack = async unitId => {
@@ -1183,10 +1221,17 @@ export default function App() {
   const canInteractNow = selected
     ? (freePlace ? (!selected.owner && !TYPES[selected.type].impassable) : reachable.has(selected.id))
     : false;
+  
+  const goHome = () => {
+    const firstId = profile?.owned?.[0];
+    const t = firstId ? territories.find(x => x.id === firstId) : null;
+    if (t) { const p = toXZ(t.col, t.row); controlsRef.current?.focus(p.x, p.z); }
+    else controlsRef.current?.resetView();
+  };
 
   return (
     <div style={{ height: "100dvh", background: PAL.bg, color: PAL.text, fontFamily: "-apple-system,system-ui,sans-serif", overflow: "hidden" }}>
-        <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev} borders={borders}
+        <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev} borders={borders} reach={reachList}
         onProgress={setVisibleLoad} onReady={() => { setVisibleLoad(100); setGameReady(true); }}
         onSelect={t => { setSelected(t); setResult(null); }} controlsRef={controlsRef} />
       {!gameReady && <BootScreen progress={visibleLoad} text="Подготавливаем видимую область…" />}
@@ -1196,7 +1241,7 @@ export default function App() {
       <div style={{ position: "absolute", right: 12, bottom: 34, display: "flex", flexDirection: "column", gap: 8 }}>
         <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1.35)}>＋</ZoomBtn>
         <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1 / 1.35)}>－</ZoomBtn>
-        <ZoomBtn onClick={() => controlsRef.current?.resetView()}>⌂</ZoomBtn>
+        <ZoomBtn onClick={goHome}>⌂</ZoomBtn>
       </div>
 
       {selected && profile && (
