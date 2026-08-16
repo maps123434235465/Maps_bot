@@ -5,6 +5,7 @@ import { playClick, playBuild, startAmbience, setAmbience, getVolumes, setVolume
 
 const COLS = 800, ROWS = 600;
 const MAX_OWN = 300;
+const COLONY_COST = 2000;
 const PAL = { bg: "#071018", surf: "#0b1216", border: "rgba(255,255,255,.14)", accent: "#8b5cf6", red: "#ef4444", gold: "#f5c451", green: "#7fd18a", muted: "#6f8277", text: "#e6eee8", textD: "#a9b8ae" };
 const TYPES = {
   meadow:   { n: "Луг",  e: "🌿", bonus: null,      m: 1.00, impassable: false, top: 0x6fae4e, side: 0x47772f },
@@ -159,13 +160,18 @@ function applyOverlay(tiles, owners) {
 const tileGeo = new THREE.BoxGeometry(TILE - 0.03, 1, TILE - 0.03);
 const sideGeo = new THREE.BoxGeometry(TILE - 0.16, 1, TILE - 0.16);
 const farSideGeo = new THREE.BoxGeometry(TILE - 0.34, 1, TILE - 0.34);
+// дальние чанки: плитки ЧУТЬ шире (без щелей → нет муара/ряби на отдалении)
+const farTopGeo = new THREE.BoxGeometry(TILE + 0.06, 1, TILE + 0.06);
 const farMat = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
 const decorGeo = {
   treeTrunk: new THREE.CylinderGeometry(0.065, 0.09, 0.38, 5), treeCrown: new THREE.ConeGeometry(0.26, 0.58, 6),
   rock: new THREE.DodecahedronGeometry(0.24, 0), rockSmall: new THREE.DodecahedronGeometry(0.13, 0),
   crop: new THREE.BoxGeometry(0.06, 0.14, 0.52), bush: new THREE.IcosahedronGeometry(0.22, 0),
   reed: new THREE.CylinderGeometry(0.025, 0.035, 0.34, 4), flower: new THREE.CylinderGeometry(0.025, 0.025, 0.12, 4),
-  ridge: new THREE.BoxGeometry(0.68, 0.18, 0.22), peak: new THREE.ConeGeometry(0.58, 1.15, 5), peakSmall: new THREE.ConeGeometry(0.34, 0.62, 5)
+  ridge: new THREE.BoxGeometry(0.68, 0.18, 0.22), peak: new THREE.ConeGeometry(0.58, 1.15, 5), peakSmall: new THREE.ConeGeometry(0.34, 0.62, 5),
+  houseBase: new THREE.BoxGeometry(0.9, 0.7, 0.9), houseRoof: new THREE.ConeGeometry(0.75, 0.6, 4),
+  barn: new THREE.BoxGeometry(1.5, 0.9, 1.1), barnRoof: new THREE.ConeGeometry(1.05, 0.7, 4),
+  log: new THREE.CylinderGeometry(0.09, 0.09, 0.9, 5), stump: new THREE.CylinderGeometry(0.14, 0.18, 0.22, 6)
 };
 const mat = c => new THREE.MeshLambertMaterial({ color: c, flatShading: true });
 const MATS = {
@@ -176,6 +182,7 @@ const MATS = {
   trunk: mat(0x6b4929), leaves: mat(0x2f7d36), rock: mat(0x7c8377), rock2: mat(0x969b8d),
   crop: mat(0xb6a940), bush: mat(0x4f8e34), reed: mat(0x5e8b47), flower: mat(0xd6d15b),
   ridge: mat(0x626861), peak: mat(0x6f756e), snow: mat(0xe9f1f4),
+  houseBase: mat(0x8a6a44), barn: mat(0x7a4a3a), stump: mat(0x7a5a34),
   water: new THREE.MeshLambertMaterial({ color: 0x0d3a52 })
 };
 function needsSides(t, all) {
@@ -195,7 +202,7 @@ function createInstancedSet(scene, arr, allTiles) {
   for (const [type, items] of Object.entries(buckets)) {
     const n = items.length;
     const top = new THREE.InstancedMesh(tileGeo, MATS[type], n);
-    top.frustumCulled = false; // FIX: не куллировать инстансы (иначе рябь/пропажи)
+    top.frustumCulled = false;
     const sideItems = items.filter(t => needsSides(t, allTiles));
     const side = new THREE.InstancedMesh(sideGeo, MATS[type + "Side"], Math.max(1, sideItems.length));
     side.frustumCulled = false;
@@ -212,6 +219,7 @@ function createInstancedSet(scene, arr, allTiles) {
     side.instanceMatrix.needsUpdate = true;
     for (let i = 0; i < n; i++) {
       const t = items[i], p = toXZ(t.col, t.row);
+      // вода — ровной плоскостью ВЫШЕ волн
       dummy.position.set(p.x, t.type === "water" ? -0.05 : BASE_H + t.elev + TOP_THICK / 2, p.z);
       dummy.scale.set(1, TOP_THICK, 1); dummy.updateMatrix();
       top.setMatrixAt(i, dummy.matrix);
@@ -230,11 +238,13 @@ function createFarChunk(scene, tilesAll, cr, cc) {
   const arr = [];
   for (let r = r0; r < r1; r++) for (let c = c0; c < c1; c++) arr.push(tilesAll[r * COLS + c]);
   const dummy = new THREE.Object3D();
-  const top = new THREE.InstancedMesh(tileGeo, farMat, arr.length);
+  const top = new THREE.InstancedMesh(farTopGeo, farMat, arr.length);
   top.frustumCulled = false;
   arr.forEach((t, i) => {
     const p = toXZ(t.col, t.row);
-    dummy.position.set(p.x, t.type === "water" ? -0.05 : BASE_H + t.elev + TOP_THICK / 2 - 0.045, p.z);
+    // вода выше волн + шахматное смещение, чтобы соседние плитки не были в одной плоскости (анти z-fight)
+    const base = t.type === "water" ? -0.05 : BASE_H + t.elev + TOP_THICK / 2 - 0.045;
+    dummy.position.set(p.x, base + (((t.row + t.col) & 1) * 0.006), p.z);
     dummy.scale.set(1, TOP_THICK, 1); dummy.updateMatrix();
     top.setMatrixAt(i, dummy.matrix);
   });
@@ -381,7 +391,7 @@ function createAnimatedOcean() {
 }
 
 // ================= 3D-ЭКРАН =================
-function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev, borders, reach, highlightOwner, active }) {
+function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev, borders, reach, highlightOwner, active, settlements }) {
   const mountRef = useRef(null), R = useRef({});
   const dataRef = useRef({ territories, onSelect, selectedId, reachable, onReady, onProgress, active });
   useEffect(() => { dataRef.current = { territories, onSelect, selectedId, reachable, onReady, onProgress, active }; });
@@ -528,7 +538,6 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       if (r.selection.visible) r.selection.material.opacity = 0.10 + 0.07 * Math.sin(performance.now() * 0.004);
       if (r.reachMesh) r.reachMesh.material.opacity = 0.14 + 0.12 * Math.sin(performance.now() * 0.0035);
       if (r.hlMesh) r.hlMesh.material.opacity = 0.45 + 0.35 * Math.sin(performance.now() * 0.005);
-      // амбиент биомов по позиции камеры
       if (frames % 12 === 0) {
         const tiles = dataRef.current.territories;
         if (tiles) {
@@ -648,6 +657,41 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     m.instanceMatrix.needsUpdate = true;
     r.scene.add(m); r.reachMesh = m;
   }, [reach]);
+
+  // поселения: разные постройки по биому внутри территорий
+  useEffect(() => {
+    const r = R.current;
+    if (!r.scene) return;
+    if (r.setlMeshes) { for (const m of r.setlMeshes) { r.scene.remove(m); m.dispose(); } r.setlMeshes = null; }
+    if (!settlements) return;
+    const d = new THREE.Object3D();
+    const meshes = [];
+    const build = (geo, material, items, withColor, yOff, lay) => {
+      if (!items.length) return;
+      const m = new THREE.InstancedMesh(geo, material, items.length);
+      m.frustumCulled = false;
+      items.forEach((it, i) => {
+        const [x, y, z, rot, col] = it;
+        d.position.set(x, y + yOff, z);
+        d.rotation.set(0, rot, lay ? Math.PI / 2 : 0);
+        d.updateMatrix();
+        m.setMatrixAt(i, d.matrix);
+        if (withColor && col != null) m.setColorAt(i, new THREE.Color(col));
+      });
+      m.instanceMatrix.needsUpdate = true;
+      if (m.instanceColor) m.instanceColor.needsUpdate = true;
+      r.scene.add(m); meshes.push(m);
+    };
+    build(decorGeo.houseBase, MATS.houseBase, settlements.houses, false, 0.35);
+    build(decorGeo.houseRoof, r.roofMat || (r.roofMat = new THREE.MeshLambertMaterial({ color: 0xffffff })), settlements.roofs, true, 0.95);
+    build(decorGeo.barn, MATS.barn, settlements.barns, false, 0.45);
+    build(decorGeo.barnRoof, r.barnRoofMat || (r.barnRoofMat = new THREE.MeshLambertMaterial({ color: 0xffffff })), settlements.barnRoofs, true, 1.15);
+    build(decorGeo.crop, MATS.crop, settlements.crops, false, 0.07);
+    build(decorGeo.log, MATS.trunk, settlements.logs, false, 0.09, true);
+    build(decorGeo.stump, MATS.stump, settlements.stumps, false, 0.11);
+    build(decorGeo.rockSmall, MATS.rock2, settlements.rocks, false, 0.13);
+    r.setlMeshes = meshes;
+  }, [settlements]);
 
   useEffect(() => {
     const mount = mountRef.current, r = R.current;
@@ -781,7 +825,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
   );
 }
 
-// ================= МИНИКАРТА (в меню) =================
+// ================= МИНИКАРТА =================
 function Minimap({ territories, overlay, onPick }) {
   const ref = useRef(null), baseRef = useRef(null);
   useEffect(() => {
@@ -822,7 +866,7 @@ function Minimap({ territories, overlay, onPick }) {
   );
 }
 
-// ================= UI (строгий стиль) =================
+// ================= UI =================
 function Btn({ onClick, disabled, variant = "primary", children, style }) {
   const cls = variant === "success" ? "btnx green" : variant === "danger" ? "btnx red" : variant === "ghost" ? "btnx" : "btnx gold";
   return <button className={cls} disabled={disabled} onClick={onClick} style={{ width: "100%", padding: "12px 0", ...style }}>{children}</button>;
@@ -830,11 +874,11 @@ function Btn({ onClick, disabled, variant = "primary", children, style }) {
 function ZoomBtn({ onClick, children }) {
   return <button className="btnx" onClick={onClick} style={{ width: 40, height: 40, padding: 0, fontSize: 16 }}>{children}</button>;
 }
-function Hud({ profile, supplyEta, now, onInv, onSound }) {
+function Hud({ profile, supplyEta, now, onInv, onSound, onColony, colonyMode }) {
   let timer = "";
   if (profile.supplies < profile.supplyMax && supplyEta) {
     const s = Math.max(0, Math.ceil((supplyEta - now) / 1000));
-    timer = ` ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    timer = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   }
   return (
     <div className="panelx" style={{ position: "absolute", left: 12, top: 12, display: "flex", gap: 10, alignItems: "center", padding: "8px 12px", fontSize: 11, letterSpacing: ".08em", animation: "fadeIn .4s ease" }}>
@@ -842,6 +886,7 @@ function Hud({ profile, supplyEta, now, onInv, onSound }) {
       <span>ЭНЕРГИЯ <b>{profile.supplies}/{profile.supplyMax}</b><span style={{ color: PAL.muted }}>{timer}</span></span>
       <span>ЗЕМЛИ <b>{profile.owned.length}/{MAX_OWN}</b></span>
       <button className="btnx" onClick={onInv} style={{ padding: "4px 8px" }}>ЮНИТЫ</button>
+      <button className={"btnx" + (colonyMode ? " gold" : "")} onClick={onColony} style={{ padding: "4px 8px" }}>КОЛОНИЯ {COLONY_COST}</button>
       <button className="btnx" onClick={onSound} style={{ padding: "4px 8px" }}>ЗВУК</button>
     </div>
   );
@@ -991,8 +1036,6 @@ function Roulette({ pool, winner, onDone }) {
     </div>
   );
 }
-
-// ================= МЕНЮ =================
 function MenuScreen({ profile, servers, pools, caseCost, onSync, territories, overlay, onPick }) {
   const [sub, setSub] = useState("cases");
   const [tops, setTops] = useState(null);
@@ -1084,7 +1127,6 @@ function MenuScreen({ profile, servers, pools, caseCost, onSync, territories, ov
     </div>
   );
 }
-
 function BootScreen({ progress, text }) {
   const p = clamp(progress, 0, 100);
   return (
@@ -1121,7 +1163,11 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [infoOwner, setInfoOwner] = useState(null);
+  const [note, setNote] = useState("");
+  const [colonyMode, setColonyMode] = useState(false);
+  const [colonyTarget, setColonyTarget] = useState(null);
   const controlsRef = useRef(null);
+  const flash = m => { setNote(m); setTimeout(() => setNote(""), 2600); };
 
   useEffect(() => {
     let alive = true;
@@ -1182,9 +1228,57 @@ export default function App() {
     return out;
   }, [territories, reachable, rev]);
 
+  // поселения по биому на своих клетках
+  const settlements = useMemo(() => {
+    if (!territories) return null;
+    const S = { houses: [], roofs: [], barns: [], barnRoofs: [], crops: [], logs: [], stumps: [], rocks: [] };
+    for (const t of territories) {
+      if (!t.owner || t.type === "water") continue;
+      const p = toXZ(t.col, t.row), y = tileTop(t);
+      const h1 = (hash2(t.row, t.col, 660) % 1000 / 1000 - 0.5) * 0.8;
+      const h2 = (hash2(t.row, t.col, 661) % 1000 / 1000 - 0.5) * 0.8;
+      const rot = Math.floor(hash2(t.row, t.col, 662) % 4) * Math.PI / 2;
+      const col = t.owner === "me" ? 0xffd75e : new THREE.Color().setHSL(ownerHue(t.owner), 0.8, 0.55).getHex();
+      const cxo = Math.cos(rot), czo = Math.sin(rot);
+      if (t.type === "field") {
+        S.barns.push([p.x + h1 * 0.5 + cxo * 0.7, y, p.z + h2 * 0.5 + czo * 0.7, rot]);
+        S.barnRoofs.push([p.x + h1 * 0.5 + cxo * 0.7, y, p.z + h2 * 0.5 + czo * 0.7, rot, col]);
+        for (let i = -1; i <= 1; i++) S.crops.push([p.x - cxo * 0.7 + (-czo) * i * 0.45, y, p.z - czo * 0.7 + cxo * i * 0.45, rot]);
+      } else if (t.type === "hills") {
+        S.houses.push([p.x + h1 * 0.6, y, p.z + h2 * 0.6, rot]);
+        S.roofs.push([p.x + h1 * 0.6, y, p.z + h2 * 0.6, rot, col]);
+        S.rocks.push([p.x - 0.8, y, p.z + 0.5]); S.rocks.push([p.x + 0.7, y, p.z - 0.7]);
+      } else if (t.type === "forest") {
+        S.stumps.push([p.x + h1, y, p.z + h2]);
+        S.logs.push([p.x - 0.6, y, p.z + 0.4, rot]);
+        S.logs.push([p.x - 0.6, y + 0.16, p.z + 0.4, rot + 0.4]);
+      } else {
+        S.houses.push([p.x + h1, y, p.z + h2, rot]);
+        S.roofs.push([p.x + h1, y, p.z + h2, rot, col]);
+      }
+    }
+    return S;
+  }, [territories, rev]);
+
   const freePlace = !!profile && profile.owned.length === 0;
+
+  const colonyOk = t => {
+    if (!t || TYPES[t.type].impassable || t.owner) return false;
+    if (!profile || !profile.owned.length) return false;
+    for (const id of profile.owned) {
+      const [r, c] = id.split("_").map(Number);
+      if (Math.max(Math.abs(r - t.row), Math.abs(c - t.col)) <= 30) return true;
+    }
+    return false;
+  };
+
   const handleSelect = t => {
     playClick();
+    if (colonyMode) {
+      if (colonyOk(t)) setColonyTarget(t);
+      else flash("НЕЛЬЗЯ: занята, непроходима или дальше 30 клеток");
+      return;
+    }
     if (t.owner && t.owner !== "me") {
       if (reachable.has(t.id)) { setInfoOwner(null); setSelected(t); setResult(null); }
       else { setInfoOwner(t.owner); setSelected(null); }
@@ -1193,6 +1287,7 @@ export default function App() {
     setInfoOwner(null);
     setSelected(t); setResult(null);
   };
+
   const doAttack = async unitId => {
     if (!selected || busy) return;
     playClick();
@@ -1218,6 +1313,17 @@ export default function App() {
     } catch (e) { setResult({ error: e.message }); }
     setBusy(false);
   };
+  const doColony = async () => {
+    if (!colonyTarget) return;
+    playBuild();
+    try {
+      const d = await api.colony(colonyTarget.id);
+      syncProfile(d.profile);
+      setOverlay(o => ({ ...o, owners: { ...o.owners, [colonyTarget.id]: "me" } }));
+      flash("КОЛОНИЯ ОСНОВАНА");
+    } catch (e) { flash("! " + e.message); }
+    setColonyTarget(null); setColonyMode(false);
+  };
 
   if (!territories) return <BootScreen progress={load} text={load < 55 ? "СОЗДАЁМ КАРТУ" : "ВОЗВОДИМ ХРЕБТЫ"} />;
 
@@ -1231,38 +1337,33 @@ export default function App() {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: PAL.bg, color: PAL.text, fontFamily: "-apple-system,system-ui,sans-serif", overflow: "hidden" }}>
-      <style>{`
-        *{border-radius:0!important}
-        .panelx{background:rgba(7,12,16,.66);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(8px)}
-        .btnx{background:transparent;border:1px solid rgba(255,255,255,.16);color:#e6eee8;text-transform:uppercase;letter-spacing:.12em;font-size:11px;font-weight:700;padding:10px 14px;cursor:pointer;transition:background .15s,border-color .15s,transform .05s;font-family:inherit}
-        .btnx:hover{background:rgba(255,255,255,.08)}
-        .btnx:active{transform:translateY(1px)}
-        .btnx:disabled{opacity:.4;cursor:not-allowed}
-        .btnx.gold{border-color:rgba(245,196,81,.55);color:#f5c451}
-        .btnx.green{border-color:rgba(127,209,138,.55);color:#7fd18a}
-        .btnx.red{border-color:rgba(239,68,68,.55);color:#ef4444}
-        .lblx{font-size:10px;letter-spacing:.16em;color:#6f8277;text-transform:uppercase;font-weight:700}
-        @keyframes sheetUp{from{transform:translateY(48px);opacity:0}to{transform:translateY(0);opacity:1}}
-        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-        @keyframes caseIn{from{transform:translateX(60px) scale(.9);opacity:0}to{transform:translateX(0) scale(1);opacity:1}}
-        @keyframes cardPop{0%{transform:scale(.3) rotateY(90deg);opacity:0}60%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}
-        input[type=range]{-webkit-appearance:none;appearance:none;height:2px;background:rgba(255,255,255,.25);outline:none}
-        input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;background:#f5c451;cursor:pointer;border-radius:0}
-      `}</style>
+      <style>{`*{border-radius:0!important} .panelx{background:rgba(7,12,16,.66);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(8px)} .btnx{background:transparent;border:1px solid rgba(255,255,255,.16);color:#e6eee8;text-transform:uppercase;letter-spacing:.12em;font-size:11px;font-weight:700;padding:10px 14px;cursor:pointer;transition:background .15s,border-color .15s,transform .05s;font-family:inherit} .btnx:hover{background:rgba(255,255,255,.08)} .btnx:active{transform:translateY(1px)} .btnx:disabled{opacity:.4;cursor:not-allowed} .btnx.gold{border-color:rgba(245,196,81,.55);color:#f5c451} .btnx.green{border-color:rgba(127,209,138,.55);color:#7fd18a} .btnx.red{border-color:rgba(239,68,68,.55);color:#ef4444} .lblx{font-size:10px;letter-spacing:.16em;color:#6f8277;text-transform:uppercase;font-weight:700} @keyframes sheetUp{from{transform:translateY(48px);opacity:0}to{transform:translateY(0);opacity:1}} @keyframes fadeIn{from{opacity:0}to{opacity:1}} @keyframes caseIn{from{transform:translateX(60px) scale(.9);opacity:0}to{transform:translateX(0) scale(1);opacity:1}} @keyframes cardPop{0%{transform:scale(.3) rotateY(90deg);opacity:0}60%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}} input[type=range]{-webkit-appearance:none;appearance:none;height:2px;background:rgba(255,255,255,.25);outline:none} input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;background:#f5c451;cursor:pointer;border-radius:0}`}</style>
 
-      {/* карта уезжает влево */}
       <div style={{ position: "absolute", inset: 0, transform: view === "map" ? "translateX(0)" : "translateX(-100%)", transition: "transform .38s cubic-bezier(.22,.9,.3,1)" }}>
         <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev}
-          borders={borders} reach={reachList} highlightOwner={infoOwner} active={view === "map"}
+          borders={borders} reach={reachList} highlightOwner={infoOwner} active={view === "map"} settlements={settlements}
           onProgress={setVisibleLoad} onReady={() => { setVisibleLoad(100); setGameReady(true); }}
           onSelect={handleSelect} controlsRef={controlsRef} />
         {!gameReady && <BootScreen progress={visibleLoad} text="ПОДГОТОВКА ОБЛАСТИ" />}
-        {profile && <Hud profile={profile} supplyEta={supplyEta} now={now} onInv={() => { playClick(); setScreen("inv"); }} onSound={() => { playClick(); setScreen("sound"); }} />}
-        {infoOwner && (
+        {profile && <Hud profile={profile} supplyEta={supplyEta} now={now}
+          onInv={() => { playClick(); setScreen("inv"); }}
+          onSound={() => { playClick(); setScreen("sound"); }}
+          onColony={() => { playClick(); setColonyMode(m => !m); }}
+          colonyMode={colonyMode} />}
+        {colonyMode && (
+          <div className="panelx" style={{ position: "absolute", top: 56, left: "50%", transform: "translateX(-50%)", padding: "6px 14px", fontSize: 11, zIndex: 45, display: "flex", gap: 10, alignItems: "center", whiteSpace: "nowrap", animation: "fadeIn .25s ease", letterSpacing: ".08em", borderColor: "rgba(245,196,81,.5)" }}>
+            РЕЖИМ КОЛОНИИ: выбери клетку в радиусе 30 от своих · {COLONY_COST} мон
+            <button className="btnx red" onClick={() => setColonyMode(false)} style={{ padding: "2px 8px" }}>X</button>
+          </div>
+        )}
+        {infoOwner && !colonyMode && (
           <div className="panelx" style={{ position: "absolute", top: 56, left: "50%", transform: "translateX(-50%)", padding: "6px 14px", fontSize: 11, zIndex: 45, display: "flex", gap: 10, alignItems: "center", whiteSpace: "nowrap", animation: "fadeIn .25s ease", letterSpacing: ".08em" }}>
             ИГРОК: {(overlay.names && overlay.names[infoOwner]) || "НЕИЗВЕСТЕН"} — ТЕРРИТОРИЯ ПОДСВЕЧЕНА
             <button className="btnx red" onClick={() => setInfoOwner(null)} style={{ padding: "2px 8px" }}>X</button>
           </div>
+        )}
+        {note && (
+          <div className="panelx" style={{ position: "absolute", top: 92, left: "50%", transform: "translateX(-50%)", padding: "6px 14px", fontSize: 11, zIndex: 45, whiteSpace: "nowrap", animation: "fadeIn .25s ease", letterSpacing: ".08em" }}>{note}</div>
         )}
         <div style={{ position: "absolute", right: 12, bottom: 64, display: "flex", flexDirection: "column", gap: 6 }}>
           <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1.35)}>+</ZoomBtn>
@@ -1276,18 +1377,24 @@ export default function App() {
             result={result} canInteract={canInteractNow} freePlace={freePlace}
             ownerName={selected.owner ? (overlay.names && overlay.names[selected.owner]) || "ИГРОК" : null} />
         )}
+        {colonyTarget && profile && (
+          <Modal title="Основать колонию" onClose={() => setColonyTarget(null)}>
+            <div style={{ fontSize: 12, color: PAL.textD, marginBottom: 12 }}>
+              Клетка {colonyTarget.row}:{colonyTarget.col} станет вашей одиночной территорией в обход правила смежности. Цена {COLONY_COST} мон.
+            </div>
+            <Btn disabled={profile.coins < COLONY_COST} onClick={doColony}>ОСНОВАТЬ ЗА {COLONY_COST}</Btn>
+          </Modal>
+        )}
         {screen === "inv" && profile && <InventoryModal profile={profile} onClose={() => setScreen(null)} />}
         {screen === "sound" && <SettingsModal onClose={() => setScreen(null)} />}
       </div>
 
-      {/* меню выезжает справа */}
       <div style={{ position: "absolute", inset: 0, transform: view === "menu" ? "translateX(0)" : "translateX(100%)", transition: "transform .38s cubic-bezier(.22,.9,.3,1)" }}>
         {profile && <MenuScreen profile={profile} servers={servers} pools={pools} caseCost={caseCost} onSync={syncProfile}
           territories={territories} overlay={overlay}
           onPick={(x, z) => { setView("map"); controlsRef.current?.focus(x, z); }} />}
       </div>
 
-      {/* общий полупрозрачный плейн с двумя кнопками, без смайлов */}
       <div className="panelx" style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", display: "flex", zIndex: 65, background: "rgba(7,12,16,.6)" }}>
         <button className="btnx" onClick={() => { playClick(); setView("map"); }} style={{ border: "none", padding: "13px 30px", color: view === "map" ? PAL.gold : PAL.text, background: view === "map" ? "rgba(245,196,81,.08)" : "transparent" }}>Карта</button>
         <div style={{ width: 1, background: "rgba(255,255,255,.14)" }} />

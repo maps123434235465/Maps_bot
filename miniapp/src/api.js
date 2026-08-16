@@ -14,6 +14,7 @@ async function req(path, body) {
   return j;
 }
 export const api = {
+  colony: tileId => req("/api/colony", { tileId }),
   init:   () => req("/api/init"),
   state:  () => req("/api/state"),
   tops:   () => req("/api/tops"),

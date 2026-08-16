@@ -162,6 +162,22 @@ app.get("/api/state", auth, async (req, res) => {
   res.json({ ok: true, profile: publicProfile(p), ...(await overlay(p.id)) });
 });
 
+const COLONY_COST = 2000;
+app.post("/api/colony", auth, async (req, res) => {
+  const p = req.profile; settle(p);
+  const { tileId } = req.body;
+  const type = typeOf(world, tileId);
+  if (!type || type === "mountain" || type === "water") return res.json({ ok: false, error: "Нельзя колонизировать эту клетку" });
+  if (await ownerOf(tileId)) return res.json({ ok: false, error: "Клетка занята" });
+  if (p.owned.length >= MAX_OWN) return res.json({ ok: false, error: `Максимум ${MAX_OWN} территорий` });
+  const [r, c] = tileId.split("_").map(Number);
+  const near = (p.owned || []).some(id => { const [rr, cc] = id.split("_").map(Number); return Math.max(Math.abs(rr - r), Math.abs(cc - c)) <= 30; });
+  if (!near) return res.json({ ok: false, error: "Слишком далеко (макс 30 клеток от своих)" });
+  if (p.coins < COLONY_COST) return res.json({ ok: false, error: "Нужно 2000 мон" });
+  p.coins -= COLONY_COST; p.owned.push(tileId); await saveProfile(p);
+  res.json({ ok: true, profile: publicProfile(p) });
+});
+
 const unitPower = u => Math.max(u.air, u.ground);
 function powerOf(p) {
   let s = 0;
