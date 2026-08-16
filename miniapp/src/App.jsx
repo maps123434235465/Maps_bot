@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { api, unitImg } from "./api";
+import { playClick, playBuild, startAmbience, setAmbience, getVolumes, setVolumes } from "./sounds";
 
 const COLS = 800, ROWS = 600;
 const MAX_OWN = 300;
-const PAL = { bg: "#071018", surf: "#0e1b16", border: "#2b4232", accent: "#8b5cf6", accentL: "#c4b5fd", red: "#ef4444", gold: "#f5c451", muted: "#6f8277", text: "#e6eee8", textD: "#a9b8ae" };
+const PAL = { bg: "#071018", surf: "#0b1216", border: "rgba(255,255,255,.14)", accent: "#8b5cf6", red: "#ef4444", gold: "#f5c451", green: "#7fd18a", muted: "#6f8277", text: "#e6eee8", textD: "#a9b8ae" };
 const TYPES = {
   meadow:   { n: "Луг",  e: "🌿", bonus: null,      m: 1.00, impassable: false, top: 0x6fae4e, side: 0x47772f },
   forest:   { n: "Лес",  e: "🌲", bonus: "defense", m: 1.22, impassable: false, top: 0x55923d, side: 0x38622a },
@@ -158,7 +159,7 @@ function applyOverlay(tiles, owners) {
 const tileGeo = new THREE.BoxGeometry(TILE - 0.03, 1, TILE - 0.03);
 const sideGeo = new THREE.BoxGeometry(TILE - 0.16, 1, TILE - 0.16);
 const farSideGeo = new THREE.BoxGeometry(TILE - 0.34, 1, TILE - 0.34);
-const farMat = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
+const farMat = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
 const decorGeo = {
   treeTrunk: new THREE.CylinderGeometry(0.065, 0.09, 0.38, 5), treeCrown: new THREE.ConeGeometry(0.26, 0.58, 6),
   rock: new THREE.DodecahedronGeometry(0.24, 0), rockSmall: new THREE.DodecahedronGeometry(0.13, 0),
@@ -194,10 +195,10 @@ function createInstancedSet(scene, arr, allTiles) {
   for (const [type, items] of Object.entries(buckets)) {
     const n = items.length;
     const top = new THREE.InstancedMesh(tileGeo, MATS[type], n);
-    top.frustumCulled = true;
+    top.frustumCulled = false; // FIX: не куллировать инстансы (иначе рябь/пропажи)
     const sideItems = items.filter(t => needsSides(t, allTiles));
     const side = new THREE.InstancedMesh(sideGeo, MATS[type + "Side"], Math.max(1, sideItems.length));
-    side.frustumCulled = true;
+    side.frustumCulled = false;
     const sideIdx = new Map();
     for (let i = 0; i < sideItems.length; i++) {
       const t = sideItems[i], p = toXZ(t.col, t.row);
@@ -222,7 +223,6 @@ function createInstancedSet(scene, arr, allTiles) {
   }
   return { groups, byId };
 }
-// КРУПНЫЙ ФОНОВЫЙ ЧАНК: вся область одним мешом сверху + одним мешом боков (2 draw call)
 function createFarChunk(scene, tilesAll, cr, cc) {
   const ts = FAR_TILES;
   const r0 = Math.max(0, cr * ts), r1 = Math.min(ROWS, (cr + 1) * ts);
@@ -231,7 +231,7 @@ function createFarChunk(scene, tilesAll, cr, cc) {
   for (let r = r0; r < r1; r++) for (let c = c0; c < c1; c++) arr.push(tilesAll[r * COLS + c]);
   const dummy = new THREE.Object3D();
   const top = new THREE.InstancedMesh(tileGeo, farMat, arr.length);
-  top.frustumCulled = true;
+  top.frustumCulled = false;
   arr.forEach((t, i) => {
     const p = toXZ(t.col, t.row);
     dummy.position.set(p.x, BASE_H + t.elev + TOP_THICK / 2 - 0.045, p.z);
@@ -241,7 +241,7 @@ function createFarChunk(scene, tilesAll, cr, cc) {
   top.instanceMatrix.needsUpdate = true;
   const sideItems = arr.filter(t => needsSides(t, tilesAll));
   const side = new THREE.InstancedMesh(farSideGeo, farMat, Math.max(1, sideItems.length));
-  side.frustumCulled = true;
+  side.frustumCulled = false;
   sideItems.forEach((t, i) => {
     const p = toXZ(t.col, t.row);
     const bh = BASE_H + t.elev, h = bh + 1.3;
@@ -298,7 +298,7 @@ function createDecor(scene, arr) {
   const geoOffset = g => g === decorGeo.treeTrunk ? 0.19 : g === decorGeo.treeCrown ? 0.29 : g === decorGeo.rock ? 0.22 : g === decorGeo.rockSmall ? 0.13 : g === decorGeo.crop ? 0.07 : g === decorGeo.bush ? 0.14 : g === decorGeo.reed ? 0.17 : g === decorGeo.flower ? 0.06 : g === decorGeo.ridge ? 0.09 : 0.3;
   const make = (geo, material, items, per = 1, spread = 1.7) => {
     const mesh = new THREE.InstancedMesh(geo, material, Math.max(1, items.length * per));
-    mesh.frustumCulled = true;
+    mesh.frustumCulled = false;
     const d = new THREE.Object3D();
     let k = 0;
     for (let i = 0; i < items.length; i++) {
@@ -346,11 +346,7 @@ function createWorldChunk(scene, tilesAll, cr, cc) {
   return { far: false, territories: arr, inst, decor };
 }
 function removeWorldChunk(scene, chunk) {
-  if (chunk.far) {
-    scene.remove(chunk.top); chunk.top.dispose();
-    scene.remove(chunk.side); chunk.side.dispose();
-    return;
-  }
+  if (chunk.far) { scene.remove(chunk.top); chunk.top.dispose(); scene.remove(chunk.side); chunk.side.dispose(); return; }
   for (const g of Object.values(chunk.inst.groups)) { scene.remove(g.top); g.top.dispose(); scene.remove(g.side); g.side.dispose(); }
   if (chunk.decor) for (const m of Object.values(chunk.decor)) if (m) { scene.remove(m); m.dispose(); }
 }
@@ -433,7 +429,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.farMode = false; r.initialReady = false;
     r.raycaster = new THREE.Raycaster(); r.mouse2D = new THREE.Vector2();
     r.updateProjection = () => { camera.aspect = Math.max(2, mount.clientWidth) / Math.max(2, mount.clientHeight); camera.updateProjectionMatrix(); };
-    const chunkCenter = (key) => {
+    const chunkCenter = key => {
       const far = key[0] === "F";
       const ts = far ? FAR_TILES : CHUNK_TILES;
       const [cr, cc] = key.slice(far ? 1 : 0).split(":").map(Number);
@@ -463,12 +459,10 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       return wanted;
     };
     r.refreshChunks = () => {
-      // фоновые крупные чанки — ВСЕГДА (никогда нет дыр при отдалении)
       const wantedFar = desiredKeys(true);
       r.farWanted = wantedFar;
       for (const key of wantedFar) if (!r.farChunks.has(key) && !r.farQueue.includes(key)) r.farQueue.push(key);
       for (const [key, chunk] of r.farChunks) if (!wantedFar.has(key)) { removeWorldChunk(scene, chunk); r.farChunks.delete(key); }
-      // детальные чанки — только вблизи
       if (!r.farMode) {
         const wanted = desiredKeys(false);
         r.chunkWanted = wanted;
@@ -516,7 +510,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     let raf = 0, frames = 0, lastX = r.targetX, lastZ = r.targetZ, lastDist = r.dist;
     const animate = () => {
       raf = requestAnimationFrame(animate);
-      if (!dataRef.current.active) return; // меню открыто — не тратим ресурсы
+      if (!dataRef.current.active) return;
       r.targetX += (r.panTargetX - r.targetX) * 0.18;
       r.targetZ += (r.panTargetZ - r.targetZ) * 0.18;
       r.dist += (r.distTarget - r.dist) * 0.15;
@@ -533,6 +527,26 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       if (r.selection.visible) r.selection.material.opacity = 0.10 + 0.07 * Math.sin(performance.now() * 0.004);
       if (r.reachMesh) r.reachMesh.material.opacity = 0.14 + 0.12 * Math.sin(performance.now() * 0.0035);
       if (r.hlMesh) r.hlMesh.material.opacity = 0.45 + 0.35 * Math.sin(performance.now() * 0.005);
+      // амбиент биомов по позиции камеры
+      if (frames % 12 === 0) {
+        const tiles = dataRef.current.territories;
+        if (tiles) {
+          const cx = Math.round((r.targetX + MCX) / TILE), cz = Math.round((r.targetZ + MCZ) / TILE);
+          let f = 0, m = 0, s = 0, tot = 0;
+          for (let dr = -6; dr <= 6; dr += 2) for (let dc = -6; dc <= 6; dc += 2) {
+            const r2 = cz + dr, c2 = cx + dc;
+            tot++;
+            if (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS) { s++; continue; }
+            const tt = tiles[r2 * COLS + c2];
+            if (tt.type === "forest") f++;
+            else if (tt.type === "mountain") m++;
+            else if (tt.type === "water") s++;
+          }
+          const close = clamp(1 - (r.dist - MIN_D) / (MAX_D - MIN_D), 0, 1);
+          const g = 0.15 + 0.85 * close;
+          setAmbience({ forest: (f / tot) * g, mountain: (m / tot) * g, sea: (s / tot) * g });
+        }
+      }
       frames++;
       if (frames % 30 === 0) {
         const details = r.dist < 170, sides = r.dist < 320;
@@ -575,7 +589,6 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     else r.selection.visible = false;
   }, [territories, reachable, selectedId, rev]);
 
-  // границы территорий
   useEffect(() => {
     const r = R.current;
     if (!r.scene) return;
@@ -600,7 +613,6 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.scene.add(m); r.borderMesh = m;
   }, [borders]);
 
-  // подсветка ВСЕЙ территории выбранного врага
   useEffect(() => {
     const r = R.current;
     if (!r.scene) return;
@@ -622,7 +634,6 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.scene.add(m); r.hlMesh = m;
   }, [highlightOwner, borders]);
 
-  // пульс доступных клеток
   useEffect(() => {
     const r = R.current;
     if (!r.scene) return;
@@ -637,7 +648,6 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.scene.add(m); r.reachMesh = m;
   }, [reach]);
 
-  // управление
   useEffect(() => {
     const mount = mountRef.current, r = R.current;
     if (!mount) return;
@@ -766,14 +776,11 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", background: "#0a1620" }}>
       <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
-      <div style={{ position: "absolute", left: 12, bottom: 64, fontSize: 10, color: "#ffffff66", pointerEvents: "none" }}>
-        Тяни — панорама · ПКМ — поворот · Колесо/пинч — зум
-      </div>
     </div>
   );
 }
 
-// ================= МИНИКАРТА =================
+// ================= МИНИКАРТА (в меню) =================
 function Minimap({ territories, overlay, onPick }) {
   const ref = useRef(null), baseRef = useRef(null);
   useEffect(() => {
@@ -810,106 +817,103 @@ function Minimap({ territories, overlay, onPick }) {
         const p = toXZ(c, r);
         onPick(p.x, p.z);
       }}
-      style={{ position: "absolute", right: 12, top: 12, width: 132, height: 99, borderRadius: 10, border: "1px solid rgba(255,255,255,.15)", background: "#0a1410", cursor: "pointer", imageRendering: "pixelated" }} />
+      style={{ width: "100%", border: "1px solid " + PAL.border, background: "#0a1410", cursor: "pointer", imageRendering: "pixelated", display: "block" }} />
   );
 }
 
-// ================= UI =================
+// ================= UI (строгий стиль) =================
 function Btn({ onClick, disabled, variant = "primary", children, style }) {
-  const bg = disabled ? PAL.border : variant === "success" ? "#087f3f" : variant === "danger" ? "#b93838" : variant === "ghost" ? "transparent" : PAL.accent;
-  return <button onClick={disabled ? undefined : onClick} style={{ width: "100%", padding: "12px 0", border: variant === "ghost" ? `1px solid ${PAL.border}` : "none", borderRadius: 11, fontWeight: 800, fontSize: 14, cursor: disabled ? "not-allowed" : "pointer", background: bg, color: disabled ? PAL.muted : "#fff", ...style }}>{children}</button>;
+  const cls = variant === "success" ? "btnx green" : variant === "danger" ? "btnx red" : variant === "ghost" ? "btnx" : "btnx gold";
+  return <button className={cls} disabled={disabled} onClick={onClick} style={{ width: "100%", padding: "12px 0", ...style }}>{children}</button>;
 }
 function ZoomBtn({ onClick, children }) {
-  return <button onClick={onClick} style={{ width: 42, height: 42, borderRadius: 12, border: "1px solid rgba(255,255,255,.14)", background: "rgba(8,16,16,.82)", color: "#e6eee8", fontSize: 20, fontWeight: 800, cursor: "pointer", lineHeight: 1 }}>{children}</button>;
+  return <button className="btnx" onClick={onClick} style={{ width: 40, height: 40, padding: 0, fontSize: 16 }}>{children}</button>;
 }
-const hudBtn = { width: 38, height: 38, borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(8,16,16,.82)", fontSize: 17, cursor: "pointer" };
-function Hud({ profile, supplyEta, now, onInv }) {
+function Hud({ profile, supplyEta, now, onInv, onSound }) {
   let timer = "";
   if (profile.supplies < profile.supplyMax && supplyEta) {
     const s = Math.max(0, Math.ceil((supplyEta - now) / 1000));
-    timer = ` (${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")})`;
+    timer = ` ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   }
   return (
-    <div style={{ position: "absolute", left: 12, top: 12, display: "flex", gap: 8, alignItems: "center" }}>
-      <div style={{ padding: "7px 12px", borderRadius: 10, background: "rgba(8,16,16,.82)", border: "1px solid rgba(255,255,255,.08)", fontSize: 12, fontWeight: 800, pointerEvents: "none" }}>
-        🪙 {profile.coins}{profile.income > 0 && <span style={{ color: "#7fd18a", fontWeight: 600 }}> +{profile.income}/м</span>}
-        <span style={{ marginLeft: 12 }}>⚡ {profile.supplies}/{profile.supplyMax}<span style={{ color: PAL.muted, fontWeight: 600 }}>{timer}</span></span>
-        <span style={{ marginLeft: 12 }}>🏔️ {profile.owned.length}/{MAX_OWN}</span>
-      </div>
-      <button onClick={onInv} style={hudBtn}>🎒</button>
+    <div className="panelx" style={{ position: "absolute", left: 12, top: 12, display: "flex", gap: 10, alignItems: "center", padding: "8px 12px", fontSize: 11, letterSpacing: ".08em", animation: "fadeIn .4s ease" }}>
+      <span>МОНЕТЫ <b style={{ color: PAL.gold }}>{profile.coins}</b>{profile.income > 0 && <b style={{ color: PAL.green }}> +{profile.income}/М</b>}</span>
+      <span>ЭНЕРГИЯ <b>{profile.supplies}/{profile.supplyMax}</b><span style={{ color: PAL.muted }}>{timer}</span></span>
+      <span>ЗЕМЛИ <b>{profile.owned.length}/{MAX_OWN}</b></span>
+      <button className="btnx" onClick={onInv} style={{ padding: "4px 8px" }}>ЮНИТЫ</button>
+      <button className="btnx" onClick={onSound} style={{ padding: "4px 8px" }}>ЗВУК</button>
     </div>
   );
 }
 function UnitChip({ u, sel, onClick }) {
   const dead = u.hp <= 0;
   return (
-    <div onClick={dead ? undefined : onClick} style={{ minWidth: 86, borderRadius: 12, padding: 8, cursor: dead ? "not-allowed" : "pointer", border: sel ? "2px solid " + PAL.accent : "1px solid " + PAL.border, background: dead ? "#1a1212" : PAL.bg, opacity: dead ? 0.5 : 1, textAlign: "center", flexShrink: 0 }}>
-      <img src={unitImg(u)} onError={e => e.target.style.display = "none"} style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", display: "block", margin: "0 auto 4px" }} />
+    <div onClick={dead ? undefined : onClick} style={{ minWidth: 88, border: sel ? "1px solid " + PAL.gold : "1px solid " + PAL.border, background: dead ? "#1a1212" : "#0b1216", opacity: dead ? 0.5 : 1, textAlign: "center", cursor: dead ? "not-allowed" : "pointer", flexShrink: 0, transition: "border-color .15s", padding: 8 }}>
+      <img src={unitImg(u)} onError={e => e.target.style.display = "none"} style={{ width: 44, height: 44, objectFit: "cover", display: "block", margin: "0 auto 4px", border: "1px solid " + PAL.border }} />
       <div style={{ fontSize: 11, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden" }}>{u.name}</div>
-      <div style={{ fontSize: 9, color: PAL.textD }}>⚔️{Math.max(u.air, u.ground)} 🛡️{u.protection}</div>
-      <div style={{ height: 5, background: "#1c2c23", borderRadius: 4, marginTop: 4 }}>
-        <div style={{ height: "100%", width: u.hp + "%", borderRadius: 4, background: u.hp > 50 ? "#22c55e" : u.hp > 25 ? "#f5c451" : "#ef4444" }} />
+      <div style={{ fontSize: 9, color: PAL.textD }}>ATK {Math.max(u.air, u.ground)} · DEF {u.protection}</div>
+      <div style={{ height: 4, background: "#1c2c23", marginTop: 4 }}>
+        <div style={{ height: "100%", width: u.hp + "%", background: u.hp > 50 ? PAL.green : u.hp > 25 ? PAL.gold : PAL.red }} />
       </div>
-      {dead && <div style={{ fontSize: 9, color: PAL.red, marginTop: 2 }}>ранен</div>}
+      {dead && <div style={{ fontSize: 9, color: PAL.red, marginTop: 2 }}>РАНЕН</div>}
     </div>
   );
 }
 function Modal({ title, onClose, children }) {
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.72)", zIndex: 50, display: "flex", alignItems: "flex-end" }} onClick={onClose}>
-      <div style={{ background: PAL.surf, borderRadius: "20px 20px 0 0", padding: 18, width: "100%", borderTop: "1px solid " + PAL.border, maxHeight: "80dvh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 20, fontWeight: 900, marginBottom: 12 }}>{title}</div>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 50, display: "flex", alignItems: "flex-end", animation: "fadeIn .2s ease" }} onClick={onClose}>
+      <div className="panelx" style={{ padding: 18, width: "100%", maxHeight: "80dvh", overflowY: "auto", animation: "sheetUp .3s cubic-bezier(.22,.9,.3,1)", background: "rgba(9,14,18,.92)" }} onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize: 14, fontWeight: 900, letterSpacing: ".18em", marginBottom: 14, textTransform: "uppercase" }}>{title}</div>
         {children}
-        <Btn variant="ghost" onClick={onClose} style={{ marginTop: 10 }}>Закрыть</Btn>
+        <Btn variant="ghost" onClick={onClose} style={{ marginTop: 12 }}>Закрыть</Btn>
       </div>
     </div>
   );
 }
-function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, onBuild, onClose, result, canInteract, busy, freePlace, ownerName }) {
+function TerritoryModal(props) {
+  const { t, building, profile, selUnit, setSelUnit, onAttack, onBuild, onClose, result, canInteract, busy, freePlace, ownerName } = props;
   const ti = TYPES[t.type], isOwn = t.owner === "me";
   const slots = BUILD_SLOTS[t.type] || [];
   const usable = profile.units.filter(u => u.hp > 0);
   return (
-    <Modal title={`${ti.e} ${ti.n}`} onClose={onClose}>
-      <div style={{ fontSize: 12, color: PAL.textD, margin: "-6px 0 12px" }}>
-        {!isOwn && ownerName && <span style={{ color: PAL.gold, fontWeight: 800 }}>👤 {ownerName} · </span>}
-        {building ? `${BUILDINGS_UI[building.b].i} ${BUILDINGS_UI[building.b].n} — ${BUILDINGS_UI[building.b].d}` :
-          ti.bonus ? `+${Math.round((ti.m - 1) * 100)}% ${SNAME[ti.bonus]} для защиты` : ti.impassable ? "Непроходимая зона" : "Обычная местность"}
-        {(t.type === "field" || t.type === "hills") && <span style={{ color: "#7fd18a" }}> · +1 🪙/мин пассивно</span>}
+    <Modal title={`${ti.n}${ownerName && !isOwn ? " · " + ownerName : ""}`} onClose={onClose}>
+      <div style={{ fontSize: 11, color: PAL.textD, letterSpacing: ".06em", margin: "-6px 0 12px" }}>
+        {building ? `${BUILDINGS_UI[building.b].n} — ${BUILDINGS_UI[building.b].d}` :
+          ti.bonus ? `+${Math.round((ti.m - 1) * 100)}% ${SNAME[ti.bonus]}` : ti.impassable ? "НЕПРОХОДИМО" : "ОБЫЧНАЯ МЕСТНОСТЬ"}
+        {(t.type === "field" || t.type === "hills") && <span style={{ color: PAL.green }}> · +1 МОН/МИН</span>}
       </div>
       {result && !result.error && (
-        <div style={{ padding: 12, borderRadius: 11, marginBottom: 10, background: result.win ? "#092613" : "#2d0a0a", border: `1px solid ${result.win ? "#1d9b55" : "#c43838"}` }}>
-          <b>{result.win ? "🏆 Захвачено" : "💀 Неудача"}</b>
-          <div style={{ fontSize: 12, color: PAL.textD, marginTop: 4 }}>{SICON[result.atkStat]} {result.ap} vs {SICON[result.defStat]} {result.dp} · юнит −{result.dmg} HP</div>
+        <div style={{ padding: 12, marginBottom: 10, border: `1px solid ${result.win ? PAL.green : PAL.red}`, background: result.win ? "rgba(127,209,138,.08)" : "rgba(239,68,68,.08)", animation: "fadeIn .3s ease" }}>
+          <b style={{ letterSpacing: ".1em" }}>{result.win ? "ЗАХВАЧЕНО" : "НЕУДАЧА"}</b>
+          <div style={{ fontSize: 11, color: PAL.textD, marginTop: 4 }}>{SICON[result.atkStat]} {result.ap} против {SICON[result.defStat]} {result.dp} · урон {result.dmg}</div>
         </div>
       )}
-      {result?.error && <div style={{ fontSize: 12, color: PAL.red, marginBottom: 10 }}>⚠️ {result.error}</div>}
+      {result?.error && <div style={{ fontSize: 11, color: PAL.red, marginBottom: 10 }}>! {result.error}</div>}
       {isOwn && !building && slots.length > 0 && (
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Построить ({profile.coins} 🪙):</div>
+        <div style={{ marginBottom: 12 }}>
+          <div className="lblx" style={{ marginBottom: 6 }}>Строительство</div>
           {slots.map(b => (
             <Btn key={b} disabled={profile.coins < BUILDINGS_UI[b].cost || busy} onClick={() => onBuild(b)} style={{ marginBottom: 6 }}>
-              {BUILDINGS_UI[b].i} {BUILDINGS_UI[b].n} — {BUILDINGS_UI[b].cost} 🪙
-              <div style={{ fontSize: 10, fontWeight: 500, opacity: .8 }}>{BUILDINGS_UI[b].d}</div>
+              {BUILDINGS_UI[b].n} — {BUILDINGS_UI[b].cost} мон · {BUILDINGS_UI[b].d}
             </Btn>
           ))}
         </div>
       )}
       {!isOwn && !ti.impassable && (
         <>
-          {!canInteract && <div style={{ fontSize: 12, color: PAL.muted, marginBottom: 8 }}>Клетка не граничит с твоими — атака невозможна.</div>}
-          {canInteract && freePlace && <div style={{ fontSize: 12, color: PAL.gold, marginBottom: 8 }}>🎁 Первая клетка — куда угодно!</div>}
+          {!canInteract && <div style={{ fontSize: 11, color: PAL.muted, marginBottom: 8 }}>Клетка не граничит с твоими территориями.</div>}
+          {canInteract && freePlace && <div style={{ fontSize: 11, color: PAL.gold, marginBottom: 8 }}>ПЕРВАЯ КЛЕТКА — КУДА УГОДНО</div>}
           {canInteract && (
             <>
-              <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Юнит в атаку (⚡−1):</div>
+              <div className="lblx" style={{ marginBottom: 6 }}>Юнит в атаку (−1 энергии)</div>
               <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, marginBottom: 8 }}>
-                {usable.length === 0 && <div style={{ fontSize: 12, color: PAL.muted }}>Нет юнитов — открой кейс в Меню</div>}
+                {usable.length === 0 && <div style={{ fontSize: 11, color: PAL.muted }}>Нет юнитов — открой кейс в меню</div>}
                 {usable.map(u => <UnitChip key={u.uid} u={u} sel={selUnit === u.uid} onClick={() => setSelUnit(u.uid)} />)}
               </div>
               <Btn variant="success" disabled={busy || !selUnit || usable.length === 0 || profile.supplies < 1} onClick={() => onAttack(selUnit)}>
-                {busy ? "Атака…" : "🏳️ Захватить (⚡1)"}
+                {busy ? "АТАКА…" : "АТАКОВАТЬ КЛЕТКУ"}
               </Btn>
-              {profile.supplies < 1 && <div style={{ fontSize: 11, color: PAL.gold, marginTop: 6 }}>Припасы кончились — жди восстановления</div>}
+              {profile.supplies < 1 && <div style={{ fontSize: 10, color: PAL.gold, marginTop: 6 }}>НЕТ ЭНЕРГИИ — ЖДИ ВОССТАНОВЛЕНИЯ</div>}
             </>
           )}
         </>
@@ -919,23 +923,40 @@ function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, o
 }
 function InventoryModal({ profile, onClose }) {
   return (
-    <Modal title="🎒 Инвентарь" onClose={onClose}>
-      {profile.units.length === 0 && <div style={{ color: PAL.muted, fontSize: 13 }}>Пусто. Открой кейс в Меню 📦</div>}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(96px,1fr))", gap: 10 }}>
+    <Modal title="Юниты" onClose={onClose}>
+      {profile.units.length === 0 && <div style={{ color: PAL.muted, fontSize: 12 }}>Пусто. Открой кейс в меню.</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(96px,1fr))", gap: 8 }}>
         {profile.units.map(u => (
-          <div key={u.uid} style={{ background: PAL.bg, borderRadius: 12, padding: 8, textAlign: "center", border: "1px solid " + PAL.border }}>
-            <img src={unitImg(u)} onError={e => e.target.style.display = "none"} style={{ width: "100%", aspectRatio: "1", borderRadius: 8, objectFit: "cover" }} />
+          <div key={u.uid} style={{ background: "#0b1216", border: "1px solid " + PAL.border, padding: 8, textAlign: "center" }}>
+            <img src={unitImg(u)} onError={e => e.target.style.display = "none"} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", border: "1px solid " + PAL.border }} />
             <div style={{ fontSize: 11, fontWeight: 800, marginTop: 4 }}>{u.name}</div>
             <div style={{ fontSize: 9, color: PAL.muted }}>{u.server}</div>
-            <div style={{ fontSize: 10, marginTop: 2 }}>🌪️{u.air} ⛏️{u.ground}/10 🛡️{u.protection}/10</div>
-            <div style={{ fontSize: 10, color: u.hp > 0 ? "#7fd18a" : PAL.red }}>{u.hp > 0 ? `HP ${u.hp}` : "ранен"}</div>
+            <div style={{ fontSize: 10, marginTop: 2 }}>ATK {Math.max(u.air, u.ground)} · DEF {u.protection}</div>
+            <div style={{ fontSize: 10, color: u.hp > 0 ? PAL.green : PAL.red }}>HP {u.hp}</div>
           </div>
         ))}
       </div>
     </Modal>
   );
 }
-// рулетка как в CS
+function SettingsModal({ onClose }) {
+  const [v, setV] = useState(getVolumes());
+  const upd = (k, val) => { const nv = { ...v, [k]: val }; setV(nv); setVolumes(nv); };
+  const Row = ({ name, k }) => (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".1em", marginBottom: 6 }}>{name} — {Math.round(v[k] * 100)}%</div>
+      <input type="range" min="0" max="100" value={Math.round(v[k] * 100)} onChange={e => upd(k, Number(e.target.value) / 100)} onPointerUp={() => playClick()} style={{ width: "100%" }} />
+    </div>
+  );
+  return (
+    <Modal title="Звук" onClose={onClose}>
+      <Row name="ОБЩАЯ ГРОМКОСТЬ" k="master" />
+      <Row name="ИНТЕРФЕЙС" k="ui" />
+      <Row name="БИОМЫ" k="amb" />
+      <div style={{ fontSize: 10, color: PAL.textD }}>Сохраняется на устройстве.</div>
+    </Modal>
+  );
+}
 function Roulette({ pool, winner, onDone }) {
   const boxRef = useRef(null);
   const [off, setOff] = useState(0);
@@ -956,12 +977,12 @@ function Roulette({ pool, winner, onDone }) {
     return () => { cancelAnimationFrame(t1); clearTimeout(t2); };
   }, []);
   return (
-    <div ref={boxRef} style={{ position: "relative", overflow: "hidden", borderRadius: 12, border: "1px solid " + PAL.border, background: "#0a1410", height: 132, marginBottom: 12 }}>
-      <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 3, background: PAL.gold, zIndex: 2, boxShadow: "0 0 12px " + PAL.gold }} />
+    <div ref={boxRef} style={{ position: "relative", overflow: "hidden", border: "1px solid " + PAL.border, background: "#0a1410", height: 132, marginBottom: 12 }}>
+      <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 2, background: PAL.gold, zIndex: 2, boxShadow: "0 0 12px " + PAL.gold }} />
       <div style={{ display: "flex", gap: 12, padding: "12px 0", willChange: "transform", transform: `translateX(${off}px)`, transition: run ? "transform 5s cubic-bezier(0.1,0.7,0.15,1)" : "none" }}>
         {items.map((it, i) => (
-          <div key={i} style={{ width: 96, flexShrink: 0, background: PAL.bg, border: "1px solid " + PAL.border, borderRadius: 10, padding: 6, textAlign: "center" }}>
-            <img src={`/files/${encodeURIComponent(it.server || winner.server)}/${encodeURIComponent(it.file)}`} onError={e => e.target.style.display = "none"} style={{ width: "100%", height: 64, objectFit: "cover", borderRadius: 6 }} />
+          <div key={i} style={{ width: 96, flexShrink: 0, background: "#0b1216", border: "1px solid " + PAL.border, padding: 6, textAlign: "center" }}>
+            <img src={`/files/${encodeURIComponent(it.server || winner.server)}/${encodeURIComponent(it.file)}`} onError={e => e.target.style.display = "none"} style={{ width: "100%", height: 64, objectFit: "cover", border: "1px solid " + PAL.border }} />
             <div style={{ fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden" }}>{it.name}</div>
           </div>
         ))}
@@ -970,17 +991,18 @@ function Roulette({ pool, winner, onDone }) {
   );
 }
 
-// ================= МЕНЮ (справа, выезжает) =================
-function MenuScreen({ profile, servers, pools, caseCost, onSync }) {
+// ================= МЕНЮ =================
+function MenuScreen({ profile, servers, pools, caseCost, onSync, territories, overlay, onPick }) {
   const [sub, setSub] = useState("cases");
   const [tops, setTops] = useState(null);
   const [tab, setTab] = useState("power");
-  const [caseView, setCaseView] = useState(null); // {server} | {server, rolling, win}
+  const [caseView, setCaseView] = useState(null);
   useEffect(() => {
     if (!tops) api.tops().then(setTops).catch(() => setTops({ coins: [], cards: [], power: [] }));
   }, []);
   const open = async () => {
-    setCaseView(v => ({ ...v, rolling: true, win: null }));
+    playClick();
+    setCaseView(v => ({ ...v, rolling: true, win: null, err: "" }));
     try {
       const d = await api.openCase(caseView.server);
       onSync(d.profile);
@@ -991,70 +1013,67 @@ function MenuScreen({ profile, servers, pools, caseCost, onSync }) {
   };
   const pool = pools?.[caseView?.server] || [];
   return (
-    <div style={{ position: "absolute", inset: 0, background: PAL.bg, color: PAL.text, overflowY: "auto", padding: "16px 14px 90px", fontFamily: "-apple-system,system-ui,sans-serif" }}>
-      <style>{`@keyframes caseIn{from{transform:translateX(60px) scale(.85);opacity:0}to{transform:translateX(0) scale(1);opacity:1}}@keyframes cardPop{0%{transform:scale(.3) rotateY(90deg);opacity:0}60%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}`}</style>
-      <div style={{ fontSize: 22, fontWeight: 900, marginBottom: 12 }}>🎒 Мир</div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-        {[["cases", "📦 Кейсы"], ["tops", "🏆 Топы"]].map(([k, n]) => (
-          <button key={k} onClick={() => setSub(k)} style={{ padding: "8px 14px", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "1px solid " + (sub === k ? PAL.accent : PAL.border), background: sub === k ? "#2a1d4d" : "transparent", color: PAL.text }}>{n}</button>
+    <div style={{ position: "absolute", inset: 0, background: "rgba(7,12,16,.96)", color: PAL.text, overflowY: "auto", padding: "16px 14px 90px", fontFamily: "-apple-system,system-ui,sans-serif" }}>
+      <div style={{ fontSize: 15, fontWeight: 900, letterSpacing: ".22em", marginBottom: 14 }}>МИР</div>
+      <div className="lblx" style={{ marginBottom: 6 }}>Обзор территории</div>
+      <Minimap territories={territories} overlay={overlay} onPick={onPick} />
+      <div style={{ display: "flex", gap: 6, margin: "14px 0" }}>
+        {[["cases", "КЕЙСЫ"], ["tops", "ТОПЫ"]].map(([k, n]) => (
+          <button key={k} className={"btnx" + (sub === k ? " gold" : "")} onClick={() => { playClick(); setSub(k); }}>{n}</button>
         ))}
       </div>
-
       {sub === "cases" && (
         <>
-          <div style={{ fontSize: 13, color: PAL.textD, marginBottom: 10 }}>🪙 {profile.coins} · открытие {caseCost} 🪙</div>
-          {servers.length === 0 && <div style={{ color: PAL.muted }}>На сервере нет папок с карточками.</div>}
+          <div style={{ fontSize: 11, color: PAL.textD, marginBottom: 10, letterSpacing: ".08em" }}>МОНЕТЫ {profile.coins} · ЦЕНА {caseCost}</div>
+          {servers.length === 0 && <div style={{ color: PAL.muted, fontSize: 12 }}>На сервере нет папок с карточками.</div>}
           {servers.map(s => (
-            <button key={s.name} onClick={() => setCaseView({ server: s.name })} style={{ width: "100%", marginBottom: 8, padding: "12px 14px", borderRadius: 12, border: "1px solid " + PAL.border, background: PAL.surf, color: PAL.text, fontSize: 14, fontWeight: 800, cursor: "pointer", textAlign: "left" }}>
-              📦 {pretty(s.name)} <span style={{ color: PAL.muted, fontWeight: 600 }}>· {s.count} 👤</span>
+            <button key={s.name} className="btnx" onClick={() => { playClick(); setCaseView({ server: s.name }); }} style={{ width: "100%", marginBottom: 8, padding: "12px 14px", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+              <span>{pretty(s.name)}</span><span style={{ color: PAL.muted }}>{s.count} карт</span>
             </button>
           ))}
         </>
       )}
-
       {sub === "tops" && (
         <>
           <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-            {[["power", "🏰 Сила"], ["coins", "🪙 Монеты"], ["cards", "🃏 Карты"]].map(([k, n]) => (
-              <button key={k} onClick={() => setTab(k)} style={{ padding: "6px 12px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "1px solid " + (tab === k ? PAL.accent : PAL.border), background: tab === k ? "#2a1d4d" : "transparent", color: PAL.text }}>{n}</button>
+            {[["power", "СИЛА"], ["coins", "МОНЕТЫ"], ["cards", "КАРТЫ"]].map(([k, n]) => (
+              <button key={k} className={"btnx" + (tab === k ? " gold" : "")} onClick={() => setTab(k)}>{n}</button>
             ))}
           </div>
-          {!tops && <div style={{ color: PAL.muted }}>Загрузка…</div>}
+          {!tops && <div style={{ color: PAL.muted, fontSize: 12 }}>Загрузка…</div>}
           {tops && (tops[tab] || []).map((row, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 10px", borderRadius: 9, background: i % 2 ? "transparent" : PAL.surf, border: "1px solid " + PAL.border, marginBottom: 4, fontSize: 13 }}>
-              <span style={{ fontWeight: 700 }}>{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`} {row.n}</span>
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 10px", border: "1px solid " + PAL.border, marginBottom: 4, fontSize: 12, background: i % 2 ? "transparent" : "#0b1216", animation: "fadeIn .3s ease" }}>
+              <span style={{ fontWeight: 700 }}>{i + 1}. {row.n}</span>
               <span style={{ color: PAL.gold, fontWeight: 800 }}>{row.v}</span>
             </div>
           ))}
         </>
       )}
-
-      {/* оверлей кейса: блюр + анимация */}
       {caseView && (
-        <div onClick={caseView.win ? () => setCaseView(null) : undefined}
-          style={{ position: "fixed", inset: 0, backdropFilter: "blur(10px)", background: "rgba(4,8,12,.55)", zIndex: 40, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <div style={{ width: "100%", maxWidth: 460, animation: "caseIn .35s ease", background: PAL.surf, border: "1px solid " + PAL.border, borderRadius: 16, padding: 16 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>📦 Кейс «{pretty(caseView.server)}»</div>
+        <div onClick={caseView.win ? () => { playClick(); setCaseView(null); } : undefined}
+          style={{ position: "fixed", inset: 0, backdropFilter: "blur(10px)", background: "rgba(4,8,12,.55)", zIndex: 40, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, animation: "fadeIn .25s ease" }}>
+          <div className="panelx" style={{ width: "100%", maxWidth: 460, animation: "caseIn .35s cubic-bezier(.22,.9,.3,1)", background: "rgba(9,14,18,.94)", padding: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 900, letterSpacing: ".16em", marginBottom: 10 }}>КЕЙС «{pretty(caseView.server).toUpperCase()}»</div>
             {caseView.rolling && caseView.win && <Roulette pool={pool} winner={caseView.win} onDone={() => {}} />}
             {caseView.rolling && !caseView.win && (
               <div style={{ textAlign: "center", padding: 20 }}>
-                <div style={{ fontSize: 52, display: "inline-block", animation: "caseIn .4s ease" }}>📦</div>
-                <div style={{ fontSize: 12, color: PAL.gold, marginTop: 8 }}>Открываем…</div>
+                <div style={{ fontSize: 46, animation: "caseIn .4s ease" }}>▣</div>
+                <div style={{ fontSize: 11, color: PAL.gold, marginTop: 8, letterSpacing: ".14em" }}>ОТКРЫТИЕ…</div>
               </div>
             )}
             {caseView.win && (
-              <div style={{ textAlign: "center", padding: 12, background: PAL.bg, borderRadius: 14, border: "1px solid " + PAL.accent, animation: "cardPop .45s ease" }}>
-                <img src={unitImg(caseView.win)} onError={e => e.target.style.display = "none"} style={{ width: 96, height: 96, borderRadius: 12, objectFit: "cover" }} />
-                <div style={{ fontSize: 17, fontWeight: 900, marginTop: 6 }}>✨ {caseView.win.name}</div>
-                <div style={{ fontSize: 11, color: PAL.textD }}>🌪️ {caseView.win.air} · ⛏️ {caseView.win.ground}/10 · 🛡️ {caseView.win.protection}/10</div>
-                <div style={{ fontSize: 11, color: PAL.muted, marginTop: 8 }}>Тапни в любом месте, чтобы вернуться</div>
+              <div style={{ textAlign: "center", padding: 12, border: "1px solid " + PAL.gold, animation: "cardPop .45s ease", background: "rgba(245,196,81,.06)" }}>
+                <img src={unitImg(caseView.win)} onError={e => e.target.style.display = "none"} style={{ width: 96, height: 96, objectFit: "cover", border: "1px solid " + PAL.border }} />
+                <div style={{ fontSize: 15, fontWeight: 900, marginTop: 6 }}>{caseView.win.name}</div>
+                <div style={{ fontSize: 10, color: PAL.textD, letterSpacing: ".08em" }}>ATK {caseView.win.air} · GND {caseView.win.ground}/10 · DEF {caseView.win.protection}/10</div>
+                <div style={{ fontSize: 10, color: PAL.muted, marginTop: 8 }}>ТАПНИ, ЧТОБЫ ВЕРНУТЬСЯ</div>
               </div>
             )}
-            {caseView.err && <div style={{ color: PAL.red, fontSize: 12, margin: "8px 0" }}>⚠️ {caseView.err}</div>}
+            {caseView.err && <div style={{ color: PAL.red, fontSize: 11, margin: "8px 0" }}>! {caseView.err}</div>}
             {!caseView.rolling && !caseView.win && (
               <>
-                <div style={{ textAlign: "center", fontSize: 60, margin: "8px 0", filter: "drop-shadow(0 0 18px rgba(245,196,81,.45))" }}>📦</div>
-                <Btn disabled={profile.coins < caseCost} onClick={open}>Открыть за {caseCost} 🪙</Btn>
+                <div style={{ textAlign: "center", fontSize: 54, margin: "10px 0", color: PAL.gold, textShadow: "0 0 24px rgba(245,196,81,.4)" }}>▣</div>
+                <Btn disabled={profile.coins < caseCost} onClick={open}>ОТКРЫТЬ ЗА {caseCost} МОН</Btn>
                 <Btn variant="ghost" onClick={() => setCaseView(null)} style={{ marginTop: 8 }}>Назад</Btn>
               </>
             )}
@@ -1070,13 +1089,12 @@ function BootScreen({ progress, text }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "radial-gradient(circle at 50% 35%,#10283a 0%,#071018 72%)", color: "#e6eee8", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "-apple-system,system-ui,sans-serif", zIndex: 70 }}>
       <div style={{ width: "min(440px,84vw)", textAlign: "center" }}>
-        <div style={{ fontSize: 42, marginBottom: 12 }}>🏔️</div>
-        <div style={{ fontSize: 25, fontWeight: 900 }}>Загрузка мира</div>
-        <div style={{ fontSize: 13, color: "#a9b8ae", marginTop: 8, minHeight: 20 }}>{text}</div>
-        <div style={{ height: 8, background: "#1c2c23", borderRadius: 99, marginTop: 24, overflow: "hidden", border: "1px solid #2b4232" }}>
+        <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: ".3em" }}>ЗАГРУЗКА МИРА</div>
+        <div style={{ fontSize: 12, color: "#a9b8ae", marginTop: 8, minHeight: 18, letterSpacing: ".08em" }}>{text}</div>
+        <div style={{ height: 4, background: "#1c2c23", marginTop: 22, border: "1px solid #2b4232" }}>
           <div style={{ height: "100%", width: `${p}%`, background: "linear-gradient(90deg,#8b5cf6,#c4b5fd)", transition: "width .18s ease" }} />
         </div>
-        <div style={{ fontSize: 12, color: "#6f8277", marginTop: 9 }}>{p}%</div>
+        <div style={{ fontSize: 11, color: "#6f8277", marginTop: 8 }}>{p}%</div>
       </div>
     </div>
   );
@@ -1086,7 +1104,7 @@ function BootScreen({ progress, text }) {
 const MOCK_PROFILE = { id: "dev", name: "Dev", coins: 1000, supplies: 6, supplyMax: 6, supplyNextIn: 0, income: 0, heal: 0, units: [{ uid: "u1", name: "Тест", server: "dev", file: "test.png", air: 5, ground: 6, protection: 4, hp: 100 }], owned: [], buildings: {} };
 
 export default function App() {
-  const [view, setView] = useState("map"); // "map" | "menu"
+  const [view, setView] = useState("map");
   const [territories, setTerritories] = useState(null);
   const [load, setLoad] = useState(0);
   const [gameReady, setGameReady] = useState(false), [visibleLoad, setVisibleLoad] = useState(60);
@@ -1109,10 +1127,8 @@ export default function App() {
     genMapProgressive(p => { if (alive) setLoad(p); }).then(map => { if (alive) setTerritories(map); });
     return () => { alive = false; };
   }, []);
-
   const syncProfile = p => { setProfile(p); setSupplyEta(Date.now() + (p.supplyNextIn || 0) * 1000); };
   const setOv = d => setOverlay({ owners: d.owners || {}, buildings: d.buildings || {}, names: d.names || {} });
-
   useEffect(() => {
     api.init().then(d => {
       syncProfile(d.profile); setOv(d);
@@ -1121,25 +1137,24 @@ export default function App() {
       if (first) setSelUnit(first.uid);
     }).catch(e => { console.warn("Сервер недоступен:", e.message); syncProfile(MOCK_PROFILE); });
   }, []);
-
   useEffect(() => {
     if (!territories) return;
     applyOverlay(territories, overlay.owners);
     setRev(r => r + 1);
   }, [territories, overlay]);
-
   useEffect(() => {
     if (!profile) return;
-    const id = setInterval(() => {
-      api.state().then(d => { syncProfile(d.profile); setOv(d); }).catch(() => {});
-    }, 20000);
+    const id = setInterval(() => { api.state().then(d => { syncProfile(d.profile); setOv(d); }).catch(() => {}); }, 20000);
     return () => clearInterval(id);
   }, [!!profile]);
-
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(id); }, []);
+  useEffect(() => {
+    const start = () => { startAmbience(); window.removeEventListener("pointerdown", start); window.removeEventListener("keydown", start); };
+    window.addEventListener("pointerdown", start); window.addEventListener("keydown", start);
+    return () => { window.removeEventListener("pointerdown", start); window.removeEventListener("keydown", start); };
+  }, []);
 
   const reachable = useMemo(() => territories ? getReachable(territories) : new Set(), [territories, rev]);
-
   const borders = useMemo(() => {
     if (!territories) return [];
     const out = [];
@@ -1155,7 +1170,6 @@ export default function App() {
     }
     return out;
   }, [territories, rev]);
-
   const reachList = useMemo(() => {
     if (!territories) return [];
     const out = [];
@@ -1168,9 +1182,8 @@ export default function App() {
   }, [territories, reachable, rev]);
 
   const freePlace = !!profile && profile.owned.length === 0;
-
-  // Клик по врагу: если клетка атакуема — модалка атаки; иначе ник + подсветка всей территории
   const handleSelect = t => {
+    playClick();
     if (t.owner && t.owner !== "me") {
       if (reachable.has(t.id)) { setInfoOwner(null); setSelected(t); setResult(null); }
       else { setInfoOwner(t.owner); setSelected(null); }
@@ -1179,14 +1192,13 @@ export default function App() {
     setInfoOwner(null);
     setSelected(t); setResult(null);
   };
-
   const doAttack = async unitId => {
     if (!selected || busy) return;
+    playClick();
     setBusy(true); setResult(null);
     try {
       const d = await api.attack(selected.id, unitId);
-      setResult(d.result);
-      syncProfile(d.profile);
+      setResult(d.result); syncProfile(d.profile);
       const t = territories.find(x => x.id === selected.id);
       if (d.owners[selected.id] === "me" && t) t.owner = "me";
       setRev(r => r + 1);
@@ -1196,6 +1208,7 @@ export default function App() {
   };
   const doBuild = async b => {
     if (!selected || busy) return;
+    playBuild();
     setBusy(true);
     try {
       const d = await api.build(selected.id, b);
@@ -1205,7 +1218,7 @@ export default function App() {
     setBusy(false);
   };
 
-  if (!territories) return <BootScreen progress={load} text={load < 55 ? "Создаём карту…" : "Возводим горные хребты…"} />;
+  if (!territories) return <BootScreen progress={load} text={load < 55 ? "СОЗДАЁМ КАРТУ" : "ВОЗВОДИМ ХРЕБТЫ"} />;
 
   const canInteractNow = selected ? (freePlace ? (!selected.owner && !TYPES[selected.type].impassable) : reachable.has(selected.id)) : false;
   const goHome = () => {
@@ -1217,24 +1230,42 @@ export default function App() {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: PAL.bg, color: PAL.text, fontFamily: "-apple-system,system-ui,sans-serif", overflow: "hidden" }}>
-      {/* панель карты: уезжает влево */}
+      <style>{`
+        *{border-radius:0!important}
+        .panelx{background:rgba(7,12,16,.66);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(8px)}
+        .btnx{background:transparent;border:1px solid rgba(255,255,255,.16);color:#e6eee8;text-transform:uppercase;letter-spacing:.12em;font-size:11px;font-weight:700;padding:10px 14px;cursor:pointer;transition:background .15s,border-color .15s,transform .05s;font-family:inherit}
+        .btnx:hover{background:rgba(255,255,255,.08)}
+        .btnx:active{transform:translateY(1px)}
+        .btnx:disabled{opacity:.4;cursor:not-allowed}
+        .btnx.gold{border-color:rgba(245,196,81,.55);color:#f5c451}
+        .btnx.green{border-color:rgba(127,209,138,.55);color:#7fd18a}
+        .btnx.red{border-color:rgba(239,68,68,.55);color:#ef4444}
+        .lblx{font-size:10px;letter-spacing:.16em;color:#6f8277;text-transform:uppercase;font-weight:700}
+        @keyframes sheetUp{from{transform:translateY(48px);opacity:0}to{transform:translateY(0);opacity:1}}
+        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+        @keyframes caseIn{from{transform:translateX(60px) scale(.9);opacity:0}to{transform:translateX(0) scale(1);opacity:1}}
+        @keyframes cardPop{0%{transform:scale(.3) rotateY(90deg);opacity:0}60%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}
+        input[type=range]{-webkit-appearance:none;appearance:none;height:2px;background:rgba(255,255,255,.25);outline:none}
+        input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;background:#f5c451;cursor:pointer;border-radius:0}
+      `}</style>
+
+      {/* карта уезжает влево */}
       <div style={{ position: "absolute", inset: 0, transform: view === "map" ? "translateX(0)" : "translateX(-100%)", transition: "transform .38s cubic-bezier(.22,.9,.3,1)" }}>
         <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev}
           borders={borders} reach={reachList} highlightOwner={infoOwner} active={view === "map"}
           onProgress={setVisibleLoad} onReady={() => { setVisibleLoad(100); setGameReady(true); }}
           onSelect={handleSelect} controlsRef={controlsRef} />
-        {!gameReady && <BootScreen progress={visibleLoad} text="Подготавливаем видимую область…" />}
-        {profile && <Hud profile={profile} supplyEta={supplyEta} now={now} onInv={() => setScreen("inv")} />}
-        <Minimap territories={territories} overlay={overlay} onPick={(x, z) => controlsRef.current?.focus(x, z)} />
+        {!gameReady && <BootScreen progress={visibleLoad} text="ПОДГОТОВКА ОБЛАСТИ" />}
+        {profile && <Hud profile={profile} supplyEta={supplyEta} now={now} onInv={() => { playClick(); setScreen("inv"); }} onSound={() => { playClick(); setScreen("sound"); }} />}
         {infoOwner && (
-          <div style={{ position: "absolute", top: 56, left: "50%", transform: "translateX(-50%)", background: "rgba(42,29,77,.95)", border: "1px solid " + PAL.accent, borderRadius: 10, padding: "6px 14px", fontSize: 12, zIndex: 45, display: "flex", gap: 10, alignItems: "center", whiteSpace: "nowrap" }}>
-            👤 {overlay.names[infoOwner] || "Игрок"} — территория подсвечена
-            <button onClick={() => setInfoOwner(null)} style={{ border: "none", background: PAL.red, color: "#fff", borderRadius: 7, padding: "2px 8px", fontWeight: 700, cursor: "pointer" }}>✕</button>
+          <div className="panelx" style={{ position: "absolute", top: 56, left: "50%", transform: "translateX(-50%)", padding: "6px 14px", fontSize: 11, zIndex: 45, display: "flex", gap: 10, alignItems: "center", whiteSpace: "nowrap", animation: "fadeIn .25s ease", letterSpacing: ".08em" }}>
+            ИГРОК: {(overlay.names && overlay.names[infoOwner]) || "НЕИЗВЕСТЕН"} — ТЕРРИТОРИЯ ПОДСВЕЧЕНА
+            <button className="btnx red" onClick={() => setInfoOwner(null)} style={{ padding: "2px 8px" }}>X</button>
           </div>
         )}
-        <div style={{ position: "absolute", right: 12, bottom: 64, display: "flex", flexDirection: "column", gap: 8 }}>
-          <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1.35)}>＋</ZoomBtn>
-          <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1 / 1.35)}>－</ZoomBtn>
+        <div style={{ position: "absolute", right: 12, bottom: 64, display: "flex", flexDirection: "column", gap: 6 }}>
+          <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1.35)}>+</ZoomBtn>
+          <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1 / 1.35)}>−</ZoomBtn>
           <ZoomBtn onClick={goHome}>⌂</ZoomBtn>
         </div>
         {selected && profile && (
@@ -1242,20 +1273,25 @@ export default function App() {
             selUnit={selUnit} setSelUnit={setSelUnit} onAttack={doAttack} onBuild={doBuild} busy={busy}
             onClose={() => { setSelected(null); setResult(null); }}
             result={result} canInteract={canInteractNow} freePlace={freePlace}
-            ownerName={selected.owner ? overlay.names[selected.owner] : null} />
+            ownerName={selected.owner ? (overlay.names && overlay.names[selected.owner]) || "ИГРОК" : null} />
         )}
         {screen === "inv" && profile && <InventoryModal profile={profile} onClose={() => setScreen(null)} />}
+        {screen === "sound" && <SettingsModal onClose={() => setScreen(null)} />}
       </div>
 
-      {/* панель меню: выезжает справа */}
+      {/* меню выезжает справа */}
       <div style={{ position: "absolute", inset: 0, transform: view === "menu" ? "translateX(0)" : "translateX(100%)", transition: "transform .38s cubic-bezier(.22,.9,.3,1)" }}>
-        {profile && <MenuScreen profile={profile} servers={servers} pools={pools} caseCost={caseCost} onSync={syncProfile} />}
+        {profile && <MenuScreen profile={profile} servers={servers} pools={pools} caseCost={caseCost} onSync={syncProfile}
+          territories={territories} overlay={overlay}
+          onPick={(x, z) => { setView("map"); controlsRef.current?.focus(x, z); }} />}
       </div>
 
-      {/* нижний бар: Карта | Меню */}
-      <div style={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 8, zIndex: 65 }}>
-        <button onClick={() => setView("map")} style={{ padding: "10px 26px", borderRadius: 14, fontSize: 14, fontWeight: 900, cursor: "pointer", border: "1px solid " + (view === "map" ? PAL.gold : PAL.border), background: view === "map" ? "rgba(245,196,81,.18)" : "rgba(8,16,16,.9)", color: PAL.text, backdropFilter: "blur(4px)" }}>🗺️ Карта</button>
-        <button onClick={() => setView("menu")} style={{ padding: "10px 26px", borderRadius: 14, fontSize: 14, fontWeight: 900, cursor: "pointer", border: "1px solid " + (view === "menu" ? PAL.accent : PAL.border), background: view === "menu" ? "rgba(139,92,246,.22)" : "rgba(8,16,16,.9)", color: PAL.text, backdropFilter: "blur(4px)" }}>🎒 Меню</button>
+      {/* общий полупрозрачный плейн с двумя кнопками, без смайлов */}
+      <div className="panelx" style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", display: "flex", zIndex: 65, background: "rgba(7,12,16,.6)" }}>
+        <button className="btnx" onClick={() => { playClick(); setView("map"); }} style={{ border: "none", padding: "13px 30px", color: view === "map" ? PAL.gold : PAL.text, background: view === "map" ? "rgba(245,196,81,.08)" : "transparent" }}>Карта</button>
+        <div style={{ width: 1, background: "rgba(255,255,255,.14)" }} />
+        <button className="btnx" onClick={() => { playClick(); setView("menu"); }} style={{ border: "none", padding: "13px 30px", color: view === "menu" ? PAL.gold : PAL.text, background: view === "menu" ? "rgba(245,196,81,.08)" : "transparent" }}>Меню</button>
+        <div style={{ position: "absolute", bottom: 0, height: 2, width: "50%", background: PAL.gold, left: view === "map" ? 0 : "50%", transition: "left .3s cubic-bezier(.22,.9,.3,1)" }} />
       </div>
     </div>
   );
