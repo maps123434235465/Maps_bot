@@ -26,7 +26,7 @@ const MCX = MAP_W / 2, MCZ = MAP_D / 2;
 const BASE_H = 0.16, TOP_THICK = 0.06, SURFACE_EPS = 0.035;
 
 const CHUNK_TILES = 24, FAR_TILES = 48;
-const MIN_D = 45, MAX_D = 320, START_D = 240;   // дистанция камеры = зум
+const MIN_D = 45, MAX_D = 320, START_D = 240;
 const FOV = 50, TAN = Math.tan((FOV / 2) * Math.PI / 180);
 const autoPitch = d => 1.48 - clamp((d - MIN_D) / (MAX_D - MIN_D), 0, 1) * 0.53;
 const PAN_MARGIN = 260;
@@ -39,6 +39,7 @@ const BUILDINGS_UI = {
   mine:   { n: "Шахта",      i: "⛏️", cost: 200, d: "+4 🪙/мин" }
 };
 const BUILD_SLOTS = { field: ["barn", "medbay"], meadow: ["fort"], hills: ["mine"] };
+const pretty = n => n ? n.charAt(0).toUpperCase() + n.slice(1) : n;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const hash2 = (r, c, salt = 0) => {
@@ -94,7 +95,7 @@ function buildMasses() {
       ang: ((hash2(i, 11, 902) % 1000) / 1000) * Math.PI,
       rAlong:  ridge ? 28 + (hash2(i, 13, 903) % 48) : 13 + (hash2(i, 13, 903) % 15),
       rAcross: ridge ? 7 + (hash2(i, 17, 904) % 8)   : 11 + (hash2(i, 17, 904) % 16),
-      peak: (ridge ? 1.25 : 1.0) + ((hash2(i, 19, 905) % 100) / 100) * (ridge ? 1.15 : 1.0),
+      peak: (ridge ? 1.9 : 1.6) + ((hash2(i, 19, 905) % 100) / 100) * (ridge ? 1.6 : 1.4),
       lobes: 2 + (hash2(i, 23, 906) % 4),
       phase: ((hash2(i, 29, 907) % 1000) / 1000) * Math.PI * 2
     });
@@ -162,7 +163,7 @@ const nbIds = (row, col) => [
 
 function getReachable(territories) {
   const mine = territories.filter(t => t.owner === "me" && !TYPES[t.type].impassable);
-  if (!mine.length) return new Set(); // первая клетка — куда угодно (флаг freePlace)
+  if (!mine.length) return new Set();
   const adj = new Set();
   const byId = new Map(territories.map(t => [t.id, t]));
   mine.forEach(m => nbIds(m.row, m.col).forEach(id => {
@@ -194,7 +195,9 @@ const decorGeo = {
   flower: new THREE.CylinderGeometry(0.025, 0.025, 0.12, 4),
   ridge: new THREE.BoxGeometry(0.68, 0.18, 0.22),
   peak: new THREE.ConeGeometry(0.58, 1.15, 5),
-  peakSmall: new THREE.ConeGeometry(0.34, 0.62, 5)
+  peakSmall: new THREE.ConeGeometry(0.34, 0.62, 5),
+  houseBase: new THREE.BoxGeometry(0.9, 0.7, 0.9),
+  houseRoof: new THREE.ConeGeometry(0.75, 0.6, 4)
 };
 const mat = c => new THREE.MeshLambertMaterial({ color: c, flatShading: true });
 const MATS = {
@@ -205,6 +208,7 @@ const MATS = {
   trunk: mat(0x6b4929), leaves: mat(0x2f7d36), rock: mat(0x7c8377), rock2: mat(0x969b8d),
   crop: mat(0xb6a940), bush: mat(0x4f8e34), reed: mat(0x5e8b47), flower: mat(0xd6d15b),
   ridge: mat(0x626861), peak: mat(0x6f756e), snow: mat(0xe9f1f4),
+  houseBase: mat(0x8a6a44),
   water: new THREE.MeshLambertMaterial({ color: 0x0d3a52 })
 };
 
@@ -270,11 +274,11 @@ function createDecor(scene, arr) {
     const top = tileTop(t);
     if (t.type === "forest") { if (s < 42) defs.trees.push([p.x, p.z, top]); }
     else if (t.type === "mountain") {
-      const ps = 0.62 + Math.min(1.15, t.elev) * 0.55;
+      const ps = 0.62 + Math.min(2.4, t.elev) * 0.5;
       const ox = (hash2(t.row, t.col, 610) % 1000 / 1000 - 0.5) * 0.6;
       const oz = (hash2(t.row, t.col, 611) % 1000 / 1000 - 0.5) * 0.6;
       defs.peaks.push([p.x + ox, p.z + oz, top + 0.575 * ps, ps]);
-      if (t.elev > 1.25) {
+      if (t.elev > 1.7) {
         const ss = ps * 0.46;
         defs.snows.push([p.x + ox, p.z + oz, top + 1.15 * ps - 0.31 * ss + 0.02, ss]);
       }
@@ -320,7 +324,7 @@ function createDecor(scene, arr) {
         d.position.set(it[0] + ox, y, it[1] + oz);
         if (geo === decorGeo.treeTrunk) d.scale.set(1, 1, 1);
         else d.scale.setScalar(s);
-        d.rotation.y = (geo === decorGeo.peak || geo === decorGeo.peakSmall)
+        d.rotation.y = (geo === decorGeo.peak || geo === decorGeo.peakSmall || geo === decorGeo.houseRoof)
           ? ((hash2(i, j, 540 + per) % 1000) / 1000) * Math.PI * 2 : 0;
         d.updateMatrix();
         mesh.setMatrixAt(k++, d.matrix);
@@ -425,8 +429,8 @@ function createAnimatedOcean() {
   return mesh;
 }
 
-// ================= 3D-ЭКРАН (перспективная камера) =================
-function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev, borders, reach }) {
+// ================= 3D-ЭКРАН =================
+function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev, borders, reach, pins, houses }) {
   const mountRef = useRef(null), R = useRef({});
   const dataRef = useRef({ territories, onSelect, selectedId, reachable, onReady, onProgress });
   useEffect(() => { dataRef.current = { territories, onSelect, selectedId, reachable, onReady, onProgress }; });
@@ -479,7 +483,6 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     const fill = new THREE.DirectionalLight(0x88aaff, 0.25);
     fill.position.set(80, 60, -90); scene.add(fill);
 
-    // прямоугольных подложек больше нет — везде, где нет земли, видно море
     const ocean = createAnimatedOcean(); scene.add(ocean); r.ocean = ocean;
 
     const sel = new THREE.Mesh(
@@ -648,6 +651,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     };
   }, []);
 
+  // цвета + маркер выделения
   useEffect(() => {
     const r = R.current;
     if (!r.chunks) return;
@@ -661,7 +665,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     } else r.selection.visible = false;
   }, [territories, reachable, selectedId, rev]);
 
-    // светящиеся границы территорий
+  // границы территорий
   useEffect(() => {
     const r = R.current;
     if (!r.scene) return;
@@ -679,11 +683,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       d.updateMatrix();
       m.setMatrixAt(i, d.matrix);
       if (b.owner === "me") c.setHex(0xffd75e);
-      else {
-        let h = 0;
-        for (let i = 0; i < b.owner.length; i++) h = (h * 31 + b.owner.charCodeAt(i)) >>> 0;
-        c.setHSL((h % 360) / 360, 0.85, 0.6);
-      }
+      else { let h = 0; for (let k = 0; k < b.owner.length; k++) h = (h * 31 + b.owner.charCodeAt(k)) >>> 0; c.setHSL((h % 360) / 360, 0.85, 0.6); }
       m.setColorAt(i, c);
     });
     m.instanceMatrix.needsUpdate = true;
@@ -692,7 +692,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.borderMesh = m;
   }, [borders]);
 
-    // мягко пульсирующая подсветка клеток, которые можно захватить
+  // подсветка доступных клеток / клеток перемещения
   useEffect(() => {
     const r = R.current;
     if (!r.scene) return;
@@ -716,7 +716,66 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.reachMesh = m;
   }, [reach]);
 
-  // управление: панорама учитывает поворот камеры (не инвертируется)
+  // пины юнитов на карте
+  useEffect(() => {
+    const r = R.current;
+    if (!r.scene) return;
+    if (r.pinMesh) { r.scene.remove(r.pinMesh); r.pinMesh.dispose(); r.pinMesh = null; }
+    if (!pins || !pins.length) return;
+    if (!r.pinGeo) r.pinGeo = new THREE.ConeGeometry(0.45, 1.6, 4);
+    if (!r.pinMat) r.pinMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.95 });
+    const m = new THREE.InstancedMesh(r.pinGeo, r.pinMat, pins.length);
+    const d = new THREE.Object3D();
+    const c = new THREE.Color();
+    pins.forEach((q, i) => {
+      d.position.set(q.x, q.y + 0.8, q.z);
+      d.rotation.y = Math.PI / 4;
+      d.updateMatrix();
+      m.setMatrixAt(i, d.matrix);
+      if (q.mine) c.setHex(0xc4b5fd);
+      else { let h = 0; for (let k = 0; k < q.owner.length; k++) h = (h * 31 + q.owner.charCodeAt(k)) >>> 0; c.setHSL((h % 360) / 360, 0.85, 0.65); }
+      m.setColorAt(i, c);
+    });
+    m.instanceMatrix.needsUpdate = true;
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    r.scene.add(m);
+    r.pinMesh = m;
+  }, [pins]);
+
+  // поселения: домики на своих клетках
+  useEffect(() => {
+    const r = R.current;
+    if (!r.scene) return;
+    if (r.houseBaseMesh) { r.scene.remove(r.houseBaseMesh); r.houseBaseMesh.dispose(); r.houseBaseMesh = null; }
+    if (r.houseRoofMesh) { r.scene.remove(r.houseRoofMesh); r.houseRoofMesh.dispose(); r.houseRoofMesh = null; }
+    if (!houses || !houses.length) return;
+    const mb = new THREE.InstancedMesh(decorGeo.houseBase, MATS.houseBase, houses.length);
+    if (!r.roofMat) r.roofMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 1 });
+    const mr = new THREE.InstancedMesh(decorGeo.houseRoof, r.roofMat, houses.length);
+    const d = new THREE.Object3D();
+    const c = new THREE.Color();
+    houses.forEach((q, i) => {
+      const rot = ((hash2(Math.round(q.x * 7), Math.round(q.z * 7), 555) % 1000) / 1000) * Math.PI * 2;
+      d.position.set(q.x, q.y + 0.35, q.z);
+      d.rotation.set(0, rot, 0);
+      d.scale.setScalar(1);
+      d.updateMatrix();
+      mb.setMatrixAt(i, d.matrix);
+      d.position.set(q.x, q.y + 0.95, q.z);
+      d.updateMatrix();
+      mr.setMatrixAt(i, d.matrix);
+      if (q.mine) c.setHex(0xffd75e);
+      else { let h = 0; for (let k = 0; k < q.owner.length; k++) h = (h * 31 + q.owner.charCodeAt(k)) >>> 0; c.setHSL((h % 360) / 360, 0.8, 0.55); }
+      mr.setColorAt(i, c);
+    });
+    mb.instanceMatrix.needsUpdate = true;
+    mr.instanceMatrix.needsUpdate = true;
+    if (mr.instanceColor) mr.instanceColor.needsUpdate = true;
+    r.scene.add(mb); r.scene.add(mr);
+    r.houseBaseMesh = mb; r.houseRoofMesh = mr;
+  }, [houses]);
+
+  // управление
   useEffect(() => {
     const mount = mountRef.current, r = R.current;
     if (!mount) return;
@@ -731,8 +790,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     };
     const panBy = (dx, dy) => {
       const scale = (2 * r.dist * TAN) / Math.max(1, mount.clientHeight);
-      const rx = Math.cos(r.yaw), rz = -Math.sin(r.yaw);   // «вправо» экрана в мире
-      const ux = -Math.sin(r.yaw), uz = -Math.cos(r.yaw);  // «вверх» экрана в мире
+      const rx = Math.cos(r.yaw), rz = -Math.sin(r.yaw);
+      const ux = -Math.sin(r.yaw), uz = -Math.cos(r.yaw);
       r.panTargetX += (-rx * dx + ux * dy) * scale;
       r.panTargetZ += (-rz * dx + uz * dy) * scale;
       clampTarget();
@@ -740,7 +799,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     const zoomBy = f => { r.distTarget = clamp(r.distTarget / f, MIN_D, MAX_D); clampTarget(); };
 
     if (controlsRef) {
-        controlsRef.current = {
+      controlsRef.current = {
         zoomBy,
         focus: (x, z) => { r.panTargetX = x; r.panTargetZ = z; },
         resetView: () => {
@@ -768,9 +827,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
         }
         if (found) break;
       }
-      if (found) {
-        dataRef.current.onSelect(found);
-      }
+      if (found) dataRef.current.onSelect(found);
     };
 
     let down = false, moved = false, movedDist = 0, downTime = 0, lastX = 0, lastY = 0, rotating = false;
@@ -805,7 +862,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
 
     const touchStart = e => {
       if (e.touches.length === 1) r.touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, m: false, d: 0, t: Date.now() };
-      else if (e.touches.length >= 2) { r.touch = null;
+      else if (e.touches.length >= 2) {
+        r.touch = null;
         const dx = e.touches[0].clientX - e.touches[1].clientX, dy = e.touches[0].clientY - e.touches[1].clientY;
         r.pinch = Math.hypot(dx, dy);
         r.twoFinger = { dx, dy, cy: (e.touches[0].clientY + e.touches[1].clientY) / 2 };
@@ -880,7 +938,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
         <div>🪷 Болота · воздух</div>
         <div>🏔️ Горы · непроходимы</div>
       </div>
-      <div style={{ position: "absolute", left: 12, bottom: 10, fontSize: 10, color: "#ffffff66", pointerEvents: "none" }}>
+      <div style={{ position: "absolute", left: 12, bottom: 64, fontSize: 10, color: "#ffffff66", pointerEvents: "none" }}>
         Тяни — панорама · ПКМ — поворот · Колесо/пинч/кнопки — зум
       </div>
     </div>
@@ -903,26 +961,38 @@ function ZoomBtn({ onClick, children }) {
     </button>
   );
 }
-const hudBtn = { width: 38, height: 38, borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(8,16,16,.82)", fontSize: 17, cursor: "pointer" };
+const hudBtn = { width: 40, height: 40, borderRadius: 12, border: "1px solid rgba(255,255,255,.12)", background: "rgba(8,16,16,.85)", fontSize: 18, cursor: "pointer", flexShrink: 0 };
 
-function Hud({ profile, supplyEta, now, onInv, onCase }) {
+function Hud({ profile, supplyEta, now }) {
   let timer = "";
   if (profile.supplies < profile.supplyMax && supplyEta) {
     const s = Math.max(0, Math.ceil((supplyEta - now) / 1000));
     timer = ` (${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")})`;
   }
   return (
-    <div style={{ position: "absolute", left: 12, top: 12, display: "flex", gap: 8, alignItems: "center" }}>
-      <div style={{ padding: "7px 12px", borderRadius: 10, background: "rgba(8,16,16,.82)", border: "1px solid rgba(255,255,255,.08)", fontSize: 12, fontWeight: 800, pointerEvents: "none" }}>
-        🪙 {profile.coins}{profile.income > 0 && <span style={{ color: "#7fd18a", fontWeight: 600 }}> +{profile.income}/м</span>}
-        <span style={{ marginLeft: 12 }}>⚡ {profile.supplies}/{profile.supplyMax}<span style={{ color: PAL.muted, fontWeight: 600 }}>{timer}</span></span>
-        <span style={{ marginLeft: 12 }}>🏔️ {profile.owned.length}/{MAX_OWN}</span>
-      </div>
-      <button onClick={onInv} style={hudBtn}>🎒</button>
-      <button onClick={onCase} style={hudBtn}>📦</button>
+    <div style={{ position: "absolute", left: 12, top: 12, padding: "7px 12px", borderRadius: 10, background: "rgba(8,16,16,.82)", border: "1px solid rgba(255,255,255,.08)", fontSize: 12, fontWeight: 800, pointerEvents: "none" }}>
+      🪙 {profile.coins}{profile.income > 0 && <span style={{ color: "#7fd18a", fontWeight: 600 }}> +{profile.income}/м</span>}
+      <span style={{ marginLeft: 12 }}>⚡ {profile.supplies}/{profile.supplyMax}<span style={{ color: PAL.muted, fontWeight: 600 }}>{timer}</span></span>
+      <span style={{ marginLeft: 12 }}>🏔️ {profile.owned.length}/{MAX_OWN}</span>
     </div>
   );
 }
+
+// нижний бар: инвентарь, кейсы серверов, топы
+function BottomBar({ servers, onInv, onCase, onTops }) {
+  return (
+    <div style={{ position: "absolute", left: 0, right: 0, bottom: 10, display: "flex", gap: 8, justifyContent: "center", alignItems: "center", padding: "0 12px", overflowX: "auto", overflowY: "hidden" }}>
+      <button onClick={onInv} style={hudBtn}>🎒</button>
+      {servers.map(s => (
+        <button key={s.name} onClick={() => onCase(s.name)} style={{ ...hudBtn, width: "auto", padding: "0 14px", fontSize: 13, fontWeight: 800, color: PAL.text, whiteSpace: "nowrap" }}>
+          📦 {pretty(s.name)}
+        </button>
+      ))}
+      <button onClick={onTops} style={hudBtn}>🏆</button>
+    </div>
+  );
+}
+
 function UnitChip({ u, sel, onClick }) {
   const dead = u.hp <= 0;
   return (
@@ -948,7 +1018,8 @@ function Modal({ title, onClose, children }) {
     </div>
   );
 }
-function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, onBuild, onClose, result, canInteract, busy, freePlace }) {
+
+function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, onBuild, onClose, result, canInteract, busy, freePlace, stationed, idle, onPlace, onMoveStart }) {
   const ti = TYPES[t.type], isOwn = t.owner === "me";
   const slots = BUILD_SLOTS[t.type] || [];
   const usable = profile.units.filter(u => u.hp > 0);
@@ -957,7 +1028,7 @@ function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, o
       <div style={{ background: PAL.surf, borderRadius: "20px 20px 0 0", padding: 18, width: "100%", borderTop: "1px solid " + PAL.border, maxHeight: "80dvh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
         <div style={{ fontSize: 22, fontWeight: 900 }}>{ti.e} {ti.n}</div>
         <div style={{ fontSize: 12, color: PAL.textD, margin: "4px 0 12px" }}>
-            {building ? `${BUILDINGS_UI[building.b].i} ${BUILDINGS_UI[building.b].n} — ${BUILDINGS_UI[building.b].d}` :
+          {building ? `${BUILDINGS_UI[building.b].i} ${BUILDINGS_UI[building.b].n} — ${BUILDINGS_UI[building.b].d}` :
             ti.bonus ? `+${Math.round((ti.m - 1) * 100)}% ${SNAME[ti.bonus]} для защиты` : ti.impassable ? "Непроходимая зона" : "Обычная местность"}
           {(t.type === "field" || t.type === "hills") && <span style={{ color: "#7fd18a" }}> · +1 🪙/мин пассивно</span>}
         </div>
@@ -969,6 +1040,26 @@ function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, o
           </div>
         )}
         {result?.error && <div style={{ fontSize: 12, color: PAL.red, marginBottom: 10 }}>⚠️ {result.error}</div>}
+
+        {isOwn && (stationed.length > 0 || idle.length > 0) && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Юниты (📍 поставить / ➡️ переместить ⚡1):</div>
+            <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6 }}>
+              {stationed.map(u => (
+                <div key={u.uid} style={{ position: "relative" }}>
+                  <UnitChip u={u} sel={false} onClick={() => {}} />
+                  <button onClick={() => onMoveStart(u.uid)} style={{ position: "absolute", right: 2, top: 2, width: 26, height: 26, borderRadius: 8, border: "none", background: PAL.accent, color: "#fff", fontWeight: 800, cursor: "pointer" }}>➡️</button>
+                </div>
+              ))}
+              {idle.map(u => (
+                <div key={u.uid} style={{ position: "relative" }}>
+                  <UnitChip u={u} sel={false} onClick={() => {}} />
+                  <button onClick={() => onPlace(u.uid)} style={{ position: "absolute", right: 2, top: 2, width: 26, height: 26, borderRadius: 8, border: "none", background: "#087f3f", color: "#fff", fontWeight: 800, cursor: "pointer" }}>📍</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {isOwn && !building && slots.length > 0 && (
           <div style={{ marginBottom: 10 }}>
@@ -991,7 +1082,7 @@ function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, o
                 <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Юнит в атаку (⚡−1):</div>
                 <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, marginBottom: 8 }}>
                   {profile.units.length === 0 && <div style={{ fontSize: 12, color: PAL.muted }}>Нет юнитов — открой кейс 📦</div>}
-                  {profile.units.map(u => <UnitChip key={u.uid} u={u} sel={selUnit === u.uid} onClick={() => setSelUnit(u.uid)} />)}
+                  {profile.units.filter(u => u.hp > 0).map(u => <UnitChip key={u.uid} u={u} sel={selUnit === u.uid} onClick={() => setSelUnit(u.uid)} />)}
                 </div>
                 <Btn variant="success" disabled={busy || !selUnit || usable.length === 0 || profile.supplies < 1} onClick={() => onAttack(selUnit)}>
                   {busy ? "Атака…" : "🏳️ Захватить (⚡1)"}
@@ -1006,6 +1097,7 @@ function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, o
     </div>
   );
 }
+
 function InventoryModal({ profile, onClose }) {
   return (
     <Modal title="🎒 Инвентарь" onClose={onClose}>
@@ -1018,18 +1110,19 @@ function InventoryModal({ profile, onClose }) {
             <div style={{ fontSize: 9, color: PAL.muted }}>{u.server}</div>
             <div style={{ fontSize: 10, marginTop: 2 }}>🌪️{u.air} ⛏️{u.ground}/10 🛡️{u.protection}/10</div>
             <div style={{ fontSize: 10, color: u.hp > 0 ? "#7fd18a" : PAL.red }}>{u.hp > 0 ? `HP ${u.hp}` : "ранен"}</div>
+            <div style={{ fontSize: 9, color: PAL.textD, marginTop: 2 }}>{u.pos ? "️ на карте" : "💤 в резерве"}</div>
           </div>
         ))}
       </div>
     </Modal>
   );
 }
-function CaseModal({ servers, caseCost, coins, onOpen, onClose }) {
-  const [srv, setSrv] = useState(null);
-  const [phase, setPhase] = useState("idle"); // idle | rolling | done
+
+function CaseModal({ servers, caseCost, coins, initSrv, onOpen, onClose }) {
+  const [srv, setSrv] = useState(initSrv || null);
+  const [phase, setPhase] = useState("idle");
   const [res, setRes] = useState(null), [err, setErr] = useState("");
   const cur = srv || servers[0]?.name;
-  const pretty = n => n ? n.charAt(0).toUpperCase() + n.slice(1) : n;
   const open = async () => {
     setPhase("rolling"); setErr(""); setRes(null);
     try {
@@ -1071,10 +1164,40 @@ function CaseModal({ servers, caseCost, coins, onOpen, onClose }) {
     </Modal>
   );
 }
+
+function TopsModal({ onClose }) {
+  const [tab, setTab] = useState("power");
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    api.tops().then(setData).catch(() => setData({ coins: [], cards: [], power: [] }));
+  }, []);
+  const list = data ? (tab === "coins" ? data.coins : tab === "cards" ? data.cards : data.power) : [];
+  const medal = i => i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
+  const unit = tab === "coins" ? "🪙" : tab === "cards" ? "" : "💪";
+  return (
+    <Modal title="🏆 Топы игроков" onClose={onClose}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[["power", "🏰 Сила"], ["coins", "🪙 Монеты"], ["cards", "🃏 Карты"]].map(([k, n]) => (
+          <button key={k} onClick={() => setTab(k)} style={{ padding: "6px 12px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "1px solid " + (tab === k ? PAL.accent : PAL.border), background: tab === k ? "#2a1d4d" : "transparent", color: PAL.text }}>
+            {n}
+          </button>
+        ))}
+      </div>
+      {list.length === 0 && <div style={{ color: PAL.muted, fontSize: 13 }}>Пока пусто.</div>}
+      {list.map((row, i) => (
+        <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 10px", borderRadius: 9, background: i % 2 ? "transparent" : PAL.bg, border: "1px solid " + PAL.border, marginBottom: 4, fontSize: 13 }}>
+          <span style={{ fontWeight: 700 }}>{medal(i)} {row.n}</span>
+          <span style={{ color: PAL.gold, fontWeight: 800 }}>{row.v} {unit}</span>
+        </div>
+      ))}
+    </Modal>
+  );
+}
+
 function BootScreen({ progress, text }) {
   const p = clamp(progress, 0, 100);
   return (
-    <div style={{ height: "100dvh", background: "radial-gradient(circle at 50% 35%,#10283a 0%,#071018 72%)", color: "#e6eee8", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "-apple-system,system-ui,sans-serif" }}>
+    <div style={{ position: "fixed", inset: 0, background: "radial-gradient(circle at 50% 35%,#10283a 0%,#071018 72%)", color: "#e6eee8", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "-apple-system,system-ui,sans-serif" }}>
       <div style={{ width: "min(440px,84vw)", textAlign: "center" }}>
         <div style={{ fontSize: 42, marginBottom: 12 }}>🏔️</div>
         <div style={{ fontSize: 25, fontWeight: 900, letterSpacing: -0.5 }}>Загрузка мира</div>
@@ -1090,8 +1213,8 @@ function BootScreen({ progress, text }) {
 
 // ================= APP =================
 const MOCK_PROFILE = {
-  id: "dev", name: "Dev", coins: 1000, supplies: 6, supplyMax: 6, supplyNextIn: 0,
-  income: 0, heal: 0, units: [{ uid: "u1", name: "Тест", server: "dev", file: "test.png", air: 5, ground: 6, protection: 4, hp: 100 }],
+  id: "dev", name: "Dev", coins: 1000, supplies: 12, supplyMax: 12, supplyNextIn: 0,
+  income: 0, heal: 0, units: [{ uid: "u1", name: "Тест", server: "dev", file: "test.png", air: 5, ground: 6, protection: 4, hp: 100, pos: null }],
   owned: [], buildings: {}
 };
 
@@ -1103,14 +1226,19 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [rev, setRev] = useState(0);
   const [profile, setProfile] = useState(null);
-  const [overlay, setOverlay] = useState({ owners: {}, buildings: {} });
+  const [overlay, setOverlay] = useState({ owners: {}, buildings: {}, units: [] });
   const [servers, setServers] = useState([]), [caseCost, setCaseCost] = useState(120);
   const [supplyEta, setSupplyEta] = useState(0);
   const [selUnit, setSelUnit] = useState(null);
   const [screen, setScreen] = useState(null);
+  const [caseSrv, setCaseSrv] = useState(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [note, setNote] = useState("");
+  const [moveMode, setMoveMode] = useState(null);
   const controlsRef = useRef(null);
+
+  const flash = msg => { setNote(msg); setTimeout(() => setNote(""), 2600); };
 
   useEffect(() => {
     let alive = true;
@@ -1122,11 +1250,11 @@ export default function App() {
     setProfile(p);
     setSupplyEta(Date.now() + (p.supplyNextIn || 0) * 1000);
   };
+  const setOv = d => setOverlay({ owners: d.owners || {}, buildings: d.buildings || {}, units: d.units || [] });
 
   useEffect(() => {
     api.init().then(d => {
-      syncProfile(d.profile);
-      setOverlay({ owners: d.owners, buildings: d.buildings });
+      syncProfile(d.profile); setOv(d);
       setServers(d.servers); setCaseCost(d.caseCost || 120);
       const first = d.profile.units.find(u => u.hp > 0);
       if (first) setSelUnit(first.uid);
@@ -1145,10 +1273,7 @@ export default function App() {
   useEffect(() => {
     if (!profile) return;
     const id = setInterval(() => {
-      api.state().then(d => {
-        syncProfile(d.profile);
-        setOverlay({ owners: d.owners, buildings: d.buildings });
-      }).catch(() => {});
+      api.state().then(d => { syncProfile(d.profile); setOv(d); }).catch(() => {});
     }, 20000);
     return () => clearInterval(id);
   }, [!!profile]);
@@ -1160,7 +1285,7 @@ export default function App() {
 
   const reachable = useMemo(() => territories ? getReachable(territories) : new Set(), [territories, rev]);
 
-    const borders = useMemo(() => {
+  const borders = useMemo(() => {
     if (!territories) return [];
     const out = [];
     const get = (r2, c2) => (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS) ? null : territories[r2 * COLS + c2];
@@ -1177,16 +1302,60 @@ export default function App() {
     return out;
   }, [territories, rev]);
 
+  // поселения: домик на каждой своей клетке (с детерминированным смещением)
+  const houses = useMemo(() => {
+    if (!territories) return [];
+    const out = [];
+    for (const t of territories) {
+      if (!t.owner || t.type === "water") continue;
+      const p = toXZ(t.col, t.row);
+      const ox = (hash2(t.row, t.col, 660) % 1000 / 1000 - 0.5) * 1.2;
+      const oz = (hash2(t.row, t.col, 661) % 1000 / 1000 - 0.5) * 1.2;
+      out.push({ x: p.x + ox, z: p.z + oz, y: tileTop(t), mine: t.owner === "me", owner: t.owner });
+    }
+    return out;
+  }, [territories, rev]);
+
+  // пины юнитов всех игроков
+  const pins = useMemo(() => {
+    if (!territories) return [];
+    const out = [];
+    for (const u of (overlay.units || [])) {
+      const [r, c] = u.tileId.split("_").map(Number);
+      if (r < 0 || r >= ROWS || c < 0 || c >= COLS) continue;
+      const t = territories[r * COLS + c];
+      if (!t) continue;
+      const p = toXZ(t.col, t.row);
+      out.push({ x: p.x, z: p.z, y: tileTop(t), mine: u.own === "me", owner: u.own, name: u.name });
+    }
+    return out;
+  }, [territories, overlay, rev]);
+
+  // клетки для перемещения юнита (соседние свои)
+  const moveTargets = useMemo(() => {
+    if (!moveMode || !territories) return new Set();
+    const [r, c] = moveMode.from.split("_").map(Number);
+    const s = new Set();
+    for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const r2 = r + dr, c2 = c + dc;
+      if (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS) continue;
+      const t = territories[r2 * COLS + c2];
+      if (t && t.owner === "me") s.add(t.id);
+    }
+    return s;
+  }, [moveMode, territories, rev]);
+
   const reachList = useMemo(() => {
     if (!territories) return [];
     const out = [];
     for (const t of territories) {
-      if (!reachable.has(t.id)) continue;
+      const hit = moveMode ? moveTargets.has(t.id) : reachable.has(t.id);
+      if (!hit) continue;
       const p = toXZ(t.col, t.row);
       out.push({ x: p.x, z: p.z, y: tileTop(t) + 0.05 });
     }
     return out;
-  }, [territories, reachable, rev]);
+  }, [territories, reachable, rev, moveMode, moveTargets]);
 
   const freePlace = !!profile && profile.owned.length === 0;
 
@@ -1201,6 +1370,7 @@ export default function App() {
       if (d.owners[selected.id] === "me" && t) t.owner = "me";
       setRev(r => r + 1);
       setSelected(t ? { ...t } : null);
+      if (d.result.win) flash("🏆 Клетка захвачена, юнит встал на неё");
     } catch (e) { setResult({ error: e.message }); }
     setBusy(false);
   };
@@ -1212,8 +1382,25 @@ export default function App() {
       const d = await api.build(selected.id, b);
       syncProfile(d.profile);
       setOverlay(o => ({ ...o, buildings: { ...o.buildings, [d.building.tileId]: { b: d.building.b, own: "me" } } }));
+      flash("🏗️ Построено: " + BUILDINGS_UI[b].n);
     } catch (e) { setResult({ error: e.message }); }
     setBusy(false);
+  };
+
+  const doPlace = async (uid, tileId) => {
+    try {
+      const d = await api.place(uid, tileId);
+      syncProfile(d.profile);
+      flash("📍 Юнит размещён на карте");
+    } catch (e) { flash("⚠️ " + e.message); }
+  };
+
+  const doMove = async (uid, tileId) => {
+    try {
+      const d = await api.move(uid, tileId);
+      syncProfile(d.profile);
+      flash("➡️ Юнит переместился (⚡−1)");
+    } catch (e) { flash("⚠️ " + e.message); }
   };
 
   if (!territories) return <BootScreen progress={load} text={load < 55 ? "Создаём карту…" : "Возводим горные хребты…"} />;
@@ -1221,7 +1408,7 @@ export default function App() {
   const canInteractNow = selected
     ? (freePlace ? (!selected.owner && !TYPES[selected.type].impassable) : reachable.has(selected.id))
     : false;
-  
+
   const goHome = () => {
     const firstId = profile?.owned?.[0];
     const t = firstId ? territories.find(x => x.id === firstId) : null;
@@ -1229,30 +1416,65 @@ export default function App() {
     else controlsRef.current?.resetView();
   };
 
+  const handleSelect = t => {
+    if (moveMode) {
+      if (moveTargets.has(t.id)) doMove(moveMode.unitId, t.id);
+      else flash("❌ Только соседняя своя клетка");
+      setMoveMode(null);
+      return;
+    }
+    setSelected(t); setResult(null);
+  };
+
   return (
-    <div style={{ height: "100dvh", background: PAL.bg, color: PAL.text, fontFamily: "-apple-system,system-ui,sans-serif", overflow: "hidden" }}>
-        <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev} borders={borders} reach={reachList}
+    <div style={{ position: "fixed", inset: 0, background: PAL.bg, color: PAL.text, fontFamily: "-apple-system,system-ui,sans-serif", overflow: "hidden" }}>
+      <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev}
+        borders={borders} reach={reachList} pins={pins} houses={houses}
         onProgress={setVisibleLoad} onReady={() => { setVisibleLoad(100); setGameReady(true); }}
-        onSelect={t => { setSelected(t); setResult(null); }} controlsRef={controlsRef} />
+        onSelect={handleSelect} controlsRef={controlsRef} />
       {!gameReady && <BootScreen progress={visibleLoad} text="Подготавливаем видимую область…" />}
 
-      {profile && <Hud profile={profile} supplyEta={supplyEta} now={now} onInv={() => setScreen("inv")} onCase={() => setScreen("case")} />}
+      {profile && <Hud profile={profile} supplyEta={supplyEta} now={now} />}
 
-      <div style={{ position: "absolute", right: 12, bottom: 34, display: "flex", flexDirection: "column", gap: 8 }}>
+      {note && (
+        <div style={{ position: "absolute", top: 56, left: "50%", transform: "translateX(-50%)", background: "rgba(8,16,16,.92)", border: "1px solid " + PAL.border, borderRadius: 10, padding: "6px 14px", fontSize: 12, zIndex: 60, pointerEvents: "none", whiteSpace: "nowrap" }}>
+          {note}
+        </div>
+      )}
+      {moveMode && (
+        <div style={{ position: "absolute", top: 92, left: "50%", transform: "translateX(-50%)", background: "rgba(42,29,77,.95)", border: "1px solid " + PAL.accent, borderRadius: 10, padding: "6px 14px", fontSize: 12, zIndex: 60, display: "flex", gap: 10, alignItems: "center" }}>
+          ➡️ Выбери соседнюю свою клетку (⚡1)
+          <button onClick={() => setMoveMode(null)} style={{ border: "none", background: PAL.red, color: "#fff", borderRadius: 7, padding: "2px 8px", fontWeight: 700, cursor: "pointer" }}>✕</button>
+        </div>
+      )}
+
+      <div style={{ position: "absolute", right: 12, bottom: 64, display: "flex", flexDirection: "column", gap: 8 }}>
         <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1.35)}>＋</ZoomBtn>
         <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1 / 1.35)}>－</ZoomBtn>
         <ZoomBtn onClick={goHome}>⌂</ZoomBtn>
       </div>
 
-      {selected && profile && (
+      {profile && (
+        <BottomBar servers={servers}
+          onInv={() => setScreen("inv")}
+          onCase={srv => { setCaseSrv(srv); setScreen("case"); }}
+          onTops={() => setScreen("tops")} />
+      )}
+
+      {selected && profile && !moveMode && (
         <TerritoryModal t={selected} building={overlay.buildings[selected.id]} profile={profile}
           selUnit={selUnit} setSelUnit={setSelUnit} onAttack={doAttack} onBuild={doBuild} busy={busy}
           onClose={() => { setSelected(null); setResult(null); }}
-          result={result} canInteract={canInteractNow} freePlace={freePlace} />
+          result={result} canInteract={canInteractNow} freePlace={freePlace}
+          stationed={profile.units.filter(u => u.pos === selected.id)}
+          idle={profile.units.filter(u => !u.pos)}
+          onPlace={uid => doPlace(uid, selected.id)}
+          onMoveStart={uid => { setMoveMode({ unitId: uid, from: selected.id }); setSelected(null); }} />
       )}
       {screen === "inv" && profile && <InventoryModal profile={profile} onClose={() => setScreen(null)} />}
+      {screen === "tops" && <TopsModal onClose={() => setScreen(null)} />}
       {screen === "case" && profile && (
-        <CaseModal servers={servers} caseCost={caseCost} coins={profile.coins} onClose={() => setScreen(null)}
+        <CaseModal servers={servers} caseCost={caseCost} coins={profile.coins} initSrv={caseSrv} onClose={() => setScreen(null)}
           onOpen={async srv => { const d = await api.openCase(srv); syncProfile(d.profile); return d; }} />
       )}
     </div>

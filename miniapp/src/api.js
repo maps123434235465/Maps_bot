@@ -14,14 +14,14 @@ async function req(path, body) {
   if (!res.ok || j.ok === false) throw new Error(j.error || "Ошибка сервера");
   return j;
 }
-
 export const api = {
-  init:     () => req("/api/init"),                          // профиль + кто чем владеет + список серверов
-  state:    () => req("/api/state"),                         // обновление (доход, хил, припасы)
-  attack:   (tileId, unitId) => req("/api/attack", { tileId, unitId }),
-  build:    (tileId, building) => req("/api/build", { tileId, building }),
-  openCase: (server) => req("/api/case/open", { server })
+  init:   () => req("/api/init"),
+  state:  () => req("/api/state"),
+  tops:   () => req("/api/tops"),
+  attack: (tileId, unitId) => req("/api/attack", { tileId, unitId }),
+  build:  (tileId, building) => req("/api/build", { tileId, building }),
+  openCase: server => req("/api/case/open", { server }),
+  place:  (unitId, tileId) => req("/api/place", { unitId, tileId }),
+  move:   (unitId, tileId) => req("/api/move", { unitId, tileId })
 };
-
-// ссылка на PNG юнита (карточки лежат в репозитории: server/servers/<имя>/<файл>)
 export const unitImg = u => `/files/${encodeURIComponent(u.server)}/${encodeURIComponent(u.file)}`;

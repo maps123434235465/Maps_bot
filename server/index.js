@@ -11,30 +11,28 @@ const APP_URL = process.env.APP_URL || "";
 const PORT = process.env.PORT || 3000;
 const PING_URL = process.env.RENDER_PING_URL || (APP_URL ? APP_URL + "/health" : "");
 
-// ===== КАРТА: генерится в памяти, одинаковая каждый запуск =====
 console.log("🗺️  Генерируем мир...");
 const world = generateWorld();
 console.log(`🗺️  Мир готов (${world.cols}x${world.rows})`);
 
-// ===== SUPABASE: сейвы игроков =====
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
-  console.error("❌ Нет SUPABASE_URL или SUPABASE_KEY в переменных окружения!");
+  console.error("❌ Нет SUPABASE_URL или SUPABASE_KEY!");
   process.exit(1);
 }
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // ===== БАЛАНС =====
-const SUPPLY_MAX = 6, SUPPLY_REGEN_MS = 12 * 60 * 1000;
+const SUPPLY_MAX = 12, SUPPLY_REGEN_MS = 8 * 60 * 1000;   // больше энергии
 const START_COINS = 300, MAX_OWN = 300, CASE_COST = 120;
 const BUILDINGS = {
-  barn:   { name: "Амбар",       cost: 140, terrain: ["field"],  income: 2, desc: "+2 койна/мин" },
-  medbay: { name: "Медотсек",    cost: 160, terrain: ["field"],  heal: 8,   desc: "+8 HP юнитам/мин" },
-  fort:   { name: "Укрепления",  cost: 90,  terrain: ["meadow"], defense: 1.35, desc: "+35% защиты клетки" },
-  mine:   { name: "Шахта",       cost: 200, terrain: ["hills"],  income: 4, desc: "+4 койна/мин" }
+  barn:   { name: "Амбар",      cost: 140, terrain: ["field"],  income: 2, desc: "+2 койна/мин" },
+  medbay: { name: "Медотсек",   cost: 160, terrain: ["field"],  heal: 8,   desc: "+8 HP юнитам/мин" },
+  fort:   { name: "Укрепления", cost: 90,  terrain: ["meadow"], defense: 1.35, desc: "+35% защиты клетки" },
+  mine:   { name: "Шахта",      cost: 200, terrain: ["hills"],  income: 4, desc: "+4 койна/мин" }
 };
 const TERRAIN_DEF = { meadow: 1, field: 1, forest: 1.22, swamp: 1.18, hills: 1.34, mountain: 1.6, water: 1 };
+const TERRAIN_INCOME = { field: 1, hills: 1 };
 
-// ===== ПРОФИЛИ =====
 const P = {};
 const rnd = n => Math.floor(Math.random() * (n + 1));
 
@@ -51,7 +49,7 @@ async function loadProfile(id, user) {
   return p;
 }
 
-// ===== КАРТОЧКИ СЕРВЕРОВ (скан папок server/servers/<имя>/*.png) =====
+// ===== КАРТОЧКИ СЕРВЕРОВ =====
 const SERVERS_DIR = path.join(__dirname, "servers");
 function scanServers() {
   const out = {};
@@ -72,7 +70,13 @@ function scanServers() {
 let CARDS = scanServers();
 for (const [s, cards] of Object.entries(CARDS)) console.log(`📦 Сервер "${s}": карточек — ${cards.length}`);
 
-// ===== СОЗДАНИЕ ПРОФИЛЯ =====
+function mkUnit(c, server) {
+  return {
+    uid: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    name: c.name, server, file: c.file,
+    air: c.air, ground: c.ground, protection: c.protection, hp: 100, pos: null
+  };
+}
 function newProfile(user) {
   const p = {
     id: String(user.id), name: user.first_name || "Игрок",
@@ -80,28 +84,17 @@ function newProfile(user) {
     units: [], owned: [], buildings: {}, cases: 0
   };
   const names = Object.keys(CARDS).filter(s => CARDS[s].length);
-  if (names.length) {
-    const c = CARDS[names[0]][rnd(CARDS[names[0]].length - 1)];
-    p.units.push(mkUnit(c, names[0]));
-  }
+  if (names.length) p.units.push(mkUnit(CARDS[names[0]][rnd(CARDS[names[0]].length - 1)], names[0]));
   return p;
-}
-function mkUnit(c, server) {
-  return {
-    uid: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-    name: c.name, server, file: c.file,
-    air: c.air, ground: c.ground, protection: c.protection, hp: 100
-  };
 }
 
 // ===== ЭКОНОМИКА =====
-const TERRAIN_INCOME = { field: 1, hills: 1 };
 const incomeOf = p =>
-  Object.values(p.buildings).reduce((s, b) => s + (BUILDINGS[b].income || 0), 0) +
+  Object.values(p.buildings || {}).reduce((s, b) => s + (BUILDINGS[b].income || 0), 0) +
   (p.owned || []).reduce((s, id) => s + (TERRAIN_INCOME[typeOf(world, id)] || 0), 0);
 function healOf(p) {
-  let h = Object.values(p.buildings).reduce((s, b) => s + (BUILDINGS[b].heal || 0), 0);
-  h += p.owned.filter(id => typeOf(world, id) === "field").length * 2;
+  let h = Object.values(p.buildings || {}).reduce((s, b) => s + (BUILDINGS[b].heal || 0), 0);
+  h += (p.owned || []).filter(id => typeOf(world, id) === "field").length * 2;
   return h;
 }
 function settle(p) {
@@ -118,6 +111,17 @@ function settle(p) {
     p.tickTs += mins * 60000;
   }
 }
+const unitPower = u => Math.max(u.air, u.ground);
+function powerOf(p) {
+  let s = 0;
+  for (const id of (p.owned || [])) {
+    s += 10 * (TERRAIN_DEF[typeOf(world, id)] || 1);
+    const b = (p.buildings || {})[id];
+    if (b === "fort") s += 35; else if (b) s += 5;
+  }
+  for (const u of (p.units || [])) s += unitPower(u) * 5;
+  return Math.round(s);
+}
 function publicProfile(p) {
   return {
     id: p.id, name: p.name, coins: p.coins,
@@ -128,22 +132,22 @@ function publicProfile(p) {
   };
 }
 async function overlay(meId) {
-  const owners = {}, buildings = {};
+  const owners = {}, buildings = {}, units = [];
   const { data } = await sb.from("players").select("id, data");
   for (const row of (data || [])) {
     const p = row.data;
     const who = p.id === meId ? "me" : "p" + p.id;
     for (const t of (p.owned || [])) owners[t] = who;
     for (const [t, b] of Object.entries(p.buildings || {})) buildings[t] = { b, own: who };
+    for (const u of (p.units || [])) if (u.pos) units.push({ tileId: u.pos, own: who, name: u.name });
   }
-  return { owners, buildings };
+  return { owners, buildings, units };
 }
 async function ownerOf(tileId) {
   const { data } = await sb.from("players").select("id, data");
   for (const row of (data || [])) if (row.data.owned && row.data.owned.includes(tileId)) return row.id;
   return null;
 }
-const unitPower = u => Math.max(u.air, u.ground);
 
 // ===== AUTH =====
 function checkInitData(initData, token) {
@@ -167,8 +171,6 @@ function auth(req, res, next) {
 
 // ===== EXPRESS =====
 const app = express();
-
-// Раздача собранного мини-аппа
 app.use(express.static(path.join(__dirname, "static"), {
   maxAge: "1d",
   setHeaders: (res, filePath) => {
@@ -176,15 +178,11 @@ app.use(express.static(path.join(__dirname, "static"), {
       res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   }
 }));
-// SPA fallback — все неизвестные маршруты → index.html
 app.get(/^\/(?!api|health|files).*/, (req, res) => {
   res.sendFile(path.join(__dirname, "static", "index.html"));
 });
-
 app.use(express.json({ limit: "2mb" }));
-
 app.use("/files", express.static(path.join(__dirname, "servers"), { maxAge: "7d" }));
-
 app.get("/health", (req, res) => res.send("ok"));
 
 app.get("/api/init", auth, async (req, res) => {
@@ -201,6 +199,17 @@ app.get("/api/state", auth, async (req, res) => {
   const ov = await overlay(p.id);
   res.json({ ok: true, profile: publicProfile(p), ...ov });
 });
+app.get("/api/tops", auth, async (req, res) => {
+  const { data } = await sb.from("players").select("data");
+  const rows = (data || []).map(r => r.data);
+  const mk = (getV) => rows.map(p => ({ n: p.name, v: getV(p) })).sort((a, b) => b.v - a.v).slice(0, 10);
+  res.json({
+    ok: true,
+    coins: mk(p => Math.round(p.coins || 0)),
+    cards: mk(p => (p.units || []).length),
+    power: mk(p => powerOf(p))
+  });
+});
 
 app.post("/api/case/open", auth, async (req, res) => {
   const p = req.profile; settle(p);
@@ -208,8 +217,7 @@ app.post("/api/case/open", auth, async (req, res) => {
   if (!pool || !pool.length) return res.json({ ok: false, error: "На сервере нет карточек" });
   if (p.coins < CASE_COST) return res.json({ ok: false, error: "Не хватает койнов" });
   p.coins -= CASE_COST; p.cases++;
-  const c = pool[rnd(pool.length - 1)];
-  const unit = mkUnit(c, req.body.server);
+  const unit = mkUnit(pool[rnd(pool.length - 1)], req.body.server);
   p.units.push(unit); await saveProfile(p);
   res.json({ ok: true, unit, profile: publicProfile(p) });
 });
@@ -227,6 +235,35 @@ app.post("/api/build", auth, async (req, res) => {
   res.json({ ok: true, profile: publicProfile(p), building: { tileId, b: building } });
 });
 
+// разместить юнита из инвентаря на свою клетку (бесплатно, первый выход на карту)
+app.post("/api/place", auth, async (req, res) => {
+  const p = req.profile; settle(p);
+  const { unitId, tileId } = req.body;
+  const u = p.units.find(x => x.uid === unitId);
+  if (!u) return res.json({ ok: false, error: "Нет юнита" });
+  if (u.pos) return res.json({ ok: false, error: "Юнит уже на карте" });
+  if (u.hp <= 0) return res.json({ ok: false, error: "Юнит ранен" });
+  if (!p.owned.includes(tileId)) return res.json({ ok: false, error: "Только своя клетка" });
+  u.pos = tileId; await saveProfile(p);
+  res.json({ ok: true, profile: publicProfile(p) });
+});
+
+// переместить юнита на соседнюю свою клетку за 1 ⚡
+app.post("/api/move", auth, async (req, res) => {
+  const p = req.profile; settle(p);
+  const { unitId, tileId } = req.body;
+  const u = p.units.find(x => x.uid === unitId);
+  if (!u || !u.pos) return res.json({ ok: false, error: "Юнит не на карте" });
+  if (u.hp <= 0) return res.json({ ok: false, error: "Юнит ранен" });
+  if (p.supplies < 1) return res.json({ ok: false, error: "Нет энергии ⚡" });
+  if (!p.owned.includes(tileId)) return res.json({ ok: false, error: "Только своя клетка" });
+  const [r1, c1] = u.pos.split("_").map(Number);
+  const [r2, c2] = tileId.split("_").map(Number);
+  if (Math.abs(r1 - r2) + Math.abs(c1 - c2) !== 1) return res.json({ ok: false, error: "Только на соседнюю клетку" });
+  u.pos = tileId; p.supplies--; await saveProfile(p);
+  res.json({ ok: true, profile: publicProfile(p) });
+});
+
 app.post("/api/attack", auth, async (req, res) => {
   const p = req.profile; settle(p);
   const { tileId, unitId } = req.body;
@@ -239,13 +276,11 @@ app.post("/api/attack", auth, async (req, res) => {
   const defId = await ownerOf(tileId);
   if (defId === p.id) return res.json({ ok: false, error: "Уже ваша" });
   if (p.owned.length >= MAX_OWN) return res.json({ ok: false, error: `Максимум ${MAX_OWN} территорий` });
-
   if (p.owned.length > 0) {
-  const [rr, cc] = tileId.split("_").map(Number);
-  const adj = [[rr-1,cc],[rr+1,cc],[rr,cc-1],[rr,cc+1]].some(([a,b]) => p.owned.includes(`${a}_${b}`));
-  if (!adj) return res.json({ ok: false, error: "Можно атаковать только соседние со своими клетки" });
-}
-
+    const [rr, cc] = tileId.split("_").map(Number);
+    const adj = [[rr-1,cc],[rr+1,cc],[rr,cc-1],[rr,cc+1]].some(([a,b]) => p.owned.includes(`${a}_${b}`));
+    if (!adj) return res.json({ ok: false, error: "Можно атаковать только соседние со своими клетки" });
+  }
   const ov = await overlay(p.id);
   const defMult = (TERRAIN_DEF[type] || 1) * (ov.buildings[tileId]?.b === "fort" ? 1.35 : 1);
   let dp, defStat;
@@ -263,7 +298,6 @@ app.post("/api/attack", auth, async (req, res) => {
   const dmg = Math.round((win ? 8 + rnd(12) : 26 + rnd(22)) * (1 - unit.protection * 0.04));
   unit.hp = Math.max(0, unit.hp - dmg);
   p.supplies--;
-
   if (win) {
     if (defId) {
       const o = await loadProfile(defId, null);
@@ -272,6 +306,7 @@ app.post("/api/attack", auth, async (req, res) => {
       await saveProfile(o);
     }
     p.owned.push(tileId);
+    unit.pos = tileId; // юнит встаёт на захваченную клетку
   }
   await saveProfile(p);
   res.json({
@@ -291,22 +326,18 @@ if (BOT_TOKEN) {
   ]);
   bot.onText(/\/start/, msg => {
     bot.sendMessage(msg.chat.id, "🏔️ Добро пожаловать в мир!\nЗахватывай территории, открывай кейсы серверов, строй здания.", {
-      reply_markup: { inline_keyboard: [[{ text: "🎮 Открыть карту", web_app: { url: APP_URL || `https://t.me/${BOT_TOKEN ? "..." : ""}` } }]] }
+      reply_markup: { inline_keyboard: [[{ text: "🎮 Открыть карту", web_app: { url: APP_URL } }]] }
     });
   });
-  bot.onText(/\/rescan/, async msg => {
-    bot.onText(/\/rescan/, msg => {
-      CARDS = scanServers();
-      bot.sendMessage(msg.chat.id, "✅ Карточки серверов пересканированы.");
-    });
+  bot.onText(/\/rescan/, msg => {
+    CARDS = scanServers();
+    bot.sendMessage(msg.chat.id, "✅ Карточки серверов пересканированы.");
   });
   console.log("🤖 Бот запущен с поллингом");
 }
 
-// ===== START =====
 app.listen(PORT, () => console.log(`🚀 Сервер запущен на порту ${PORT}`));
 
-// ===== SELF-PING для Render =====
 if (PING_URL) {
   setInterval(() => {
     fetch(PING_URL).then(r => console.log("ping:", r.status)).catch(e => console.warn("ping err", e.message));

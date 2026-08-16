@@ -1,6 +1,6 @@
 // Детерминированная генерация. Одинаковый результат каждый запуск.
 const COLS = 800, ROWS = 600;
-const TYPE_CH = { meadow: "m", forest: "f", hills: "h", field: "p", swamp: "w", mountain: "x" };
+const TYPE_CH = { meadow: "m", forest: "f", hills: "h", field: "p", swamp: "w", mountain: "x", water: "o" };
 const CH_TYPE = Object.fromEntries(Object.entries(TYPE_CH).map(([k, v]) => [v, k]));
 
 const hash2 = (r, c, salt = 0) => {
@@ -17,6 +17,15 @@ const vnoise = (r, c, scale, salt) => {
   const h = (a, b) => h01(a, b, salt);
   return h(r0, c0) * (1 - sr) * (1 - sc) + h(r0 + 1, c0) * sr * (1 - sc)
        + h(r0, c0 + 1) * (1 - sr) * sc + h(r0 + 1, c0 + 1) * sr * sc;
+};
+
+// Органичная береговая линия: материк «кляксой», углы и края — море
+const isLand = (row, col) => {
+  const nx = (col - COLS / 2) / (COLS / 2);
+  const nz = (row - ROWS / 2) / (ROWS / 2);
+  const d = Math.sqrt(nx * nx + nz * nz);
+  const n = (vnoise(row, col, 64, 777) - 0.5) * 0.55 + (vnoise(row, col, 23, 778) - 0.5) * 0.25;
+  return d + n < 0.92;
 };
 
 const baseType = (row, col) => {
@@ -37,7 +46,6 @@ const baseElev = (type, row, col) => {
     default:       return 0.10 + n1 * 0.16 + n2 * 0.06;
   }
 };
-
 function buildMasses() {
   const arr = [];
   for (let i = 0; i < 30; i++) {
@@ -48,20 +56,20 @@ function buildMasses() {
       ang: ((hash2(i, 11, 902) % 1000) / 1000) * Math.PI,
       rAlong:  ridge ? 28 + (hash2(i, 13, 903) % 48) : 13 + (hash2(i, 13, 903) % 15),
       rAcross: ridge ? 7 + (hash2(i, 17, 904) % 8)   : 11 + (hash2(i, 17, 904) % 16),
-      peak: (ridge ? 1.25 : 1.0) + ((hash2(i, 19, 905) % 100) / 100) * (ridge ? 1.15 : 1.0),
+      // ГОРЫ ВЫШЕ: пики 1.6..3.5
+      peak: (ridge ? 1.9 : 1.6) + ((hash2(i, 19, 905) % 100) / 100) * (ridge ? 1.6 : 1.4),
       lobes: 2 + (hash2(i, 23, 906) % 4),
       phase: ((hash2(i, 29, 907) % 1000) / 1000) * Math.PI * 2
     });
   }
   return arr;
 }
-
 function generateWorld() {
   const n = COLS * ROWS;
-  const types = new Array(n);
-  const elev = new Array(n);
+  const types = new Array(n), elev = new Array(n);
   for (let i = 0; i < n; i++) {
     const row = Math.floor(i / COLS), col = i % COLS;
+    if (!isLand(row, col)) { types[i] = "o"; elev[i] = -0.5; continue; }
     const t = baseType(row, col);
     types[i] = TYPE_CH[t];
     elev[i] = Math.round(baseElev(t, row, col) * 100) / 100;
@@ -75,6 +83,8 @@ function generateWorld() {
     for (let r = r0; r <= r1; r++) {
       const dr = r - m.sr;
       for (let c = c0; c <= c1; c++) {
+        const i = r * COLS + c;
+        if (types[i] === "o") continue;
         const dc = c - m.sc;
         const u = dr * cosA - dc * sinA, v = dr * sinA + dc * cosA;
         const ang = Math.atan2(v, u);
@@ -84,18 +94,15 @@ function generateWorld() {
         if (d2 >= 1) continue;
         const e = Math.round(m.peak * Math.pow(1 - d2, 0.68) * (0.82 + 0.30 * vnoise(r, c, 7, salt)) * 100) / 100;
         if (e <= 0.04) continue;
-        const i = r * COLS + c;
         if (e > elev[i]) { elev[i] = e; types[i] = e >= 0.42 ? "x" : "h"; }
       }
     }
   }
   return { v: 1, cols: COLS, rows: ROWS, createdAt: Date.now(), types: types.join(""), elev };
 }
-
 const typeOf = (world, tileId) => {
   const [r, c] = tileId.split("_").map(Number);
   if (r < 0 || r >= world.rows || c < 0 || c >= world.cols) return null;
   return CH_TYPE[world.types[r * world.cols + c]];
 };
-
-module.exports = { generateWorld, typeOf, COLS, ROWS };
+module.exports = { generateWorld, typeOf, isLand, COLS, ROWS };
