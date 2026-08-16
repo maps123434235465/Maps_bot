@@ -95,7 +95,10 @@ function mkUnit(c, server) {
 }
 
 // ===== ЭКОНОМИКА =====
-const incomeOf = p => Object.values(p.buildings).reduce((s, b) => s + (BUILDINGS[b].income || 0), 0);
+const TERRAIN_INCOME = { field: 1, hills: 1 };
+const incomeOf = p =>
+  Object.values(p.buildings).reduce((s, b) => s + (BUILDINGS[b].income || 0), 0) +
+  (p.owned || []).reduce((s, id) => s + (TERRAIN_INCOME[typeOf(world, id)] || 0), 0);
 function healOf(p) {
   let h = Object.values(p.buildings).reduce((s, b) => s + (BUILDINGS[b].heal || 0), 0);
   h += p.owned.filter(id => typeOf(world, id) === "field").length * 2;

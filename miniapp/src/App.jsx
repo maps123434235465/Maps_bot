@@ -28,7 +28,7 @@ const BASE_H = 0.16, TOP_THICK = 0.06, SURFACE_EPS = 0.035;
 const CHUNK_TILES = 24, FAR_TILES = 48;
 const MIN_D = 45, MAX_D = 320, START_D = 240;   // дистанция камеры = зум
 const FOV = 50, TAN = Math.tan((FOV / 2) * Math.PI / 180);
-const autoPitch = d => 1.50 - clamp((d - MIN_D) / (MAX_D - MIN_D), 0, 1) * 0.78;
+const autoPitch = d => 1.48 - clamp((d - MIN_D) / (MAX_D - MIN_D), 0, 1) * 0.53;
 const PAN_MARGIN = 260;
 const FOG_COLOR = 0x0c1f27, FOG_NEAR = 220, FOG_FAR = 2100;
 
@@ -204,7 +204,8 @@ const MATS = {
   fieldSide: mat(TYPES.field.side), swampSide: mat(TYPES.swamp.side), mountainSide: mat(TYPES.mountain.side),
   trunk: mat(0x6b4929), leaves: mat(0x2f7d36), rock: mat(0x7c8377), rock2: mat(0x969b8d),
   crop: mat(0xb6a940), bush: mat(0x4f8e34), reed: mat(0x5e8b47), flower: mat(0xd6d15b),
-  ridge: mat(0x626861), peak: mat(0x6f756e), snow: mat(0xe9f1f4)
+  ridge: mat(0x626861), peak: mat(0x6f756e), snow: mat(0xe9f1f4),
+  water: new THREE.MeshLambertMaterial({ color: 0x0d3a52 })
 };
 
 function needsSides(t, all) {
@@ -218,7 +219,7 @@ function needsSides(t, all) {
 }
 function createInstancedSet(scene, arr, detail, allTiles) {
   const buckets = {};
-  for (const t of arr) { if (t.type === "water") continue; (buckets[t.type] ||= []).push(t); }
+  for (const t of arr) { (buckets[t.type] ||= []).push(t); }
   const dummy = new THREE.Object3D();
   const byId = {};
   const groups = {};
@@ -227,14 +228,15 @@ function createInstancedSet(scene, arr, detail, allTiles) {
     const top = new THREE.InstancedMesh(tileGeo, MATS[type], n);
     top.frustumCulled = true;
     let side = null, sideIdx = new Map();
-    if (detail) {
+    if (detail && type !== "water") {
       const sideItems = items.filter(t => needsSides(t, allTiles));
       side = new THREE.InstancedMesh(sideGeo, MATS[type + "Side"], Math.max(1, sideItems.length));
       side.frustumCulled = true;
       for (let i = 0; i < sideItems.length; i++) {
         const t = sideItems[i], p = toXZ(t.col, t.row);
-        const h = BASE_H + t.elev;
-        dummy.position.set(p.x, h / 2, p.z);
+        const bh = BASE_H + t.elev;
+        const h = bh + 1.3;
+        dummy.position.set(p.x, (bh - 1.3) / 2, p.z);
         dummy.scale.set(1, h, 1);
         dummy.updateMatrix();
         side.setMatrixAt(i, dummy.matrix);
@@ -424,7 +426,7 @@ function createAnimatedOcean() {
 }
 
 // ================= 3D-ЭКРАН (перспективная камера) =================
-function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev }) {
+function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev, borders }) {
   const mountRef = useRef(null), R = useRef({});
   const dataRef = useRef({ territories, onSelect, selectedId, reachable, onReady, onProgress });
   useEffect(() => { dataRef.current = { territories, onSelect, selectedId, reachable, onReady, onProgress }; });
@@ -477,10 +479,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     const fill = new THREE.DirectionalLight(0x88aaff, 0.25);
     fill.position.set(80, 60, -90); scene.add(fill);
 
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_W + 2, MAP_D + 2), new THREE.MeshLambertMaterial({ color: 0x233a20 }));
-    ground.rotation.x = -Math.PI / 2; ground.position.y = -0.012; scene.add(ground);
-    const beach = new THREE.Mesh(new THREE.PlaneGeometry(MAP_W + 34, MAP_D + 34), new THREE.MeshLambertMaterial({ color: 0x64593b }));
-    beach.rotation.x = -Math.PI / 2; beach.position.y = -0.04; scene.add(beach);
+    // прямоугольных подложек больше нет — везде, где нет земли, видно море
     const ocean = createAnimatedOcean(); scene.add(ocean); r.ocean = ocean;
 
     const sel = new THREE.Mesh(
@@ -592,7 +591,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       r.targetX += (r.panTargetX - r.targetX) * 0.18;
       r.targetZ += (r.panTargetZ - r.targetZ) * 0.18;
       r.dist += (r.distTarget - r.dist) * 0.15;
-      r.pitch = clamp(autoPitch(r.dist) + (r.pitchOff || 0), 0.35, 1.55);
+      r.pitch = clamp(autoPitch(r.dist) + (r.pitchOff || 0), 0.92, 1.55);
       updateCameraPose();
 
       if (!r.farMode && r.dist > 280) { r.farMode = true; r.refreshChunks(); }
@@ -660,6 +659,37 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     } else r.selection.visible = false;
   }, [territories, reachable, selectedId, rev]);
 
+    // светящиеся границы территорий
+  useEffect(() => {
+    const r = R.current;
+    if (!r.scene) return;
+    if (r.borderMesh) { r.scene.remove(r.borderMesh); r.borderMesh.dispose(); r.borderMesh = null; }
+    if (!borders || !borders.length) return;
+    if (!r.borderGeo) r.borderGeo = new THREE.BoxGeometry(1, 1, 1);
+    if (!r.borderMat) r.borderMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.95 });
+    const m = new THREE.InstancedMesh(r.borderGeo, r.borderMat, borders.length);
+    const d = new THREE.Object3D();
+    const c = new THREE.Color();
+    borders.forEach((b, i) => {
+      d.position.set(b.x, b.y, b.z);
+      d.rotation.y = b.vert ? Math.PI / 2 : 0;
+      d.scale.set(TILE + 0.10, 0.10, 0.26);
+      d.updateMatrix();
+      m.setMatrixAt(i, d.matrix);
+      if (b.owner === "me") c.setHex(0xffd75e);
+      else {
+        let h = 0;
+        for (let i = 0; i < b.owner.length; i++) h = (h * 31 + b.owner.charCodeAt(i)) >>> 0;
+        c.setHSL((h % 360) / 360, 0.85, 0.6);
+      }
+      m.setColorAt(i, c);
+    });
+    m.instanceMatrix.needsUpdate = true;
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    r.scene.add(m);
+    r.borderMesh = m;
+  }, [borders]);
+
   // управление: панорама учитывает поворот камеры (не инвертируется)
   useEffect(() => {
     const mount = mountRef.current, r = R.current;
@@ -713,10 +743,6 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       }
       if (found) {
         dataRef.current.onSelect(found);
-        const p = toXZ(found.col, found.row);
-        r.panTargetX = p.x; r.panTargetZ = p.z;
-        r.targetX = p.x; r.targetZ = p.z;
-        r.refreshChunks();
       }
     };
 
@@ -904,8 +930,9 @@ function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, o
       <div style={{ background: PAL.surf, borderRadius: "20px 20px 0 0", padding: 18, width: "100%", borderTop: "1px solid " + PAL.border, maxHeight: "80dvh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
         <div style={{ fontSize: 22, fontWeight: 900 }}>{ti.e} {ti.n}</div>
         <div style={{ fontSize: 12, color: PAL.textD, margin: "4px 0 12px" }}>
-          {building ? `${BUILDINGS_UI[building.b].i} ${BUILDINGS_UI[building.b].n} — ${BUILDINGS_UI[building.b].d}` :
+            {building ? `${BUILDINGS_UI[building.b].i} ${BUILDINGS_UI[building.b].n} — ${BUILDINGS_UI[building.b].d}` :
             ti.bonus ? `+${Math.round((ti.m - 1) * 100)}% ${SNAME[ti.bonus]} для защиты` : ti.impassable ? "Непроходимая зона" : "Обычная местность"}
+          {(t.type === "field" || t.type === "hills") && <span style={{ color: "#7fd18a" }}> · +1 🪙/мин пассивно</span>}
         </div>
 
         {result && !result.error && (
@@ -1105,6 +1132,24 @@ export default function App() {
   }, []);
 
   const reachable = useMemo(() => territories ? getReachable(territories) : new Set(), [territories, rev]);
+
+    const borders = useMemo(() => {
+    if (!territories) return [];
+    const out = [];
+    const get = (r2, c2) => (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS) ? null : territories[r2 * COLS + c2];
+    for (const t of territories) {
+      if (!t.owner) continue;
+      const p = toXZ(t.col, t.row);
+      const y = tileTop(t) + 0.06;
+      const nN = get(t.row - 1, t.col), nS = get(t.row + 1, t.col), nW = get(t.row, t.col - 1), nE = get(t.row, t.col + 1);
+      if (!nN || nN.owner !== t.owner) out.push({ x: p.x, z: p.z - TILE / 2, y, vert: false, owner: t.owner });
+      if (!nS || nS.owner !== t.owner) out.push({ x: p.x, z: p.z + TILE / 2, y, vert: false, owner: t.owner });
+      if (!nW || nW.owner !== t.owner) out.push({ x: p.x - TILE / 2, z: p.z, y, vert: true, owner: t.owner });
+      if (!nE || nE.owner !== t.owner) out.push({ x: p.x + TILE / 2, z: p.z, y, vert: true, owner: t.owner });
+    }
+    return out;
+  }, [territories, rev]);
+
   const freePlace = !!profile && profile.owned.length === 0;
 
   const doAttack = async unitId => {
@@ -1141,7 +1186,7 @@ export default function App() {
 
   return (
     <div style={{ height: "100dvh", background: PAL.bg, color: PAL.text, fontFamily: "-apple-system,system-ui,sans-serif", overflow: "hidden" }}>
-      <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev}
+        <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev} borders={borders}
         onProgress={setVisibleLoad} onReady={() => { setVisibleLoad(100); setGameReady(true); }}
         onSelect={t => { setSelected(t); setResult(null); }} controlsRef={controlsRef} />
       {!gameReady && <BootScreen progress={visibleLoad} text="Подготавливаем видимую область…" />}
