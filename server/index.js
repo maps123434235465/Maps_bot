@@ -157,7 +157,13 @@ function auth(req, res, next) {
 const app = express();
 
 // Раздача собранного мини-аппа
-app.use(express.static(path.join(__dirname, "static"), { maxAge: "1d" }));
+app.use(express.static(path.join(__dirname, "static"), {
+  maxAge: "1d",
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith("index.html"))
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  }
+}));
 // SPA fallback — все неизвестные маршруты → index.html
 app.get(/^\/(?!api|health|files).*/, (req, res) => {
   res.sendFile(path.join(__dirname, "static", "index.html"));
