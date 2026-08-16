@@ -61,7 +61,7 @@ function scanServers() {
     if (!fs.statSync(full).isDirectory()) continue;
     const cards = [];
     for (const f of fs.readdirSync(full)) {
-      const m = f.match(/^(.+)-air(\d+)-ground(\d+)-protection(\d+)\.png$/i);
+      const m = f.match(/^(.+)-air(\d+)-ground(\d+)-protection(\d+)\.(png|jpg|jpeg|webp)$/i);
       if (!m) continue;
       cards.push({ file: f, name: m[1], air: +m[2], ground: +m[3], protection: +m[4] });
     }
