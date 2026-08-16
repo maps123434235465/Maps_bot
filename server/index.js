@@ -97,16 +97,6 @@ function settle(p) {
   }
 }
 const unitPower = u => Math.max(u.air, u.ground);
-function powerOf(p) {
-  let s = 0;
-  for (const id of (p.owned || [])) {
-    s += 10 * (TERRAIN_DEF[typeOf(world, id)] || 1);
-    const b = (p.buildings || {})[id];
-    if (b === "fort") s += 35; else if (b) s += 5;
-  }
-  for (const u of (p.units || [])) s += unitPower(u) * 5;
-  return Math.round(s);
-}
 function publicProfile(p) {
   return {
     id: p.id, name: p.name, coins: p.coins, supplies: p.supplies, supplyMax: SUPPLY_MAX,
@@ -122,7 +112,7 @@ async function overlay(meId) {
     const who = p.id === meId ? "me" : "p" + p.id;
     for (const t of (p.owned || [])) owners[t] = who;
     for (const [t, b] of Object.entries(p.buildings || {})) buildings[t] = { b, own: who };
-    for (const u of (p.units || [])) if (u.pos) units.push({ tileId: u.pos, own: who, name: u.name, file: u.file, server: u.server });
+    for (const u of (p.units || [])) if (u.pos) units.push({ uid: u.uid, tileId: u.pos, own: who, name: u.name, file: u.file, server: u.server });
   }
   return { owners, buildings, units };
 }
@@ -163,20 +153,13 @@ app.get("/health", (req, res) => res.send("ok"));
 
 app.get("/api/init", auth, async (req, res) => {
   const p = req.profile; settle(p); await saveProfile(p);
-  const ov = await overlay(p.id);
-  res.json({ ok: true, profile: publicProfile(p), ...ov, pools: CARDS,
+  res.json({ ok: true, profile: publicProfile(p), ...(await overlay(p.id)),
     servers: Object.keys(CARDS).map(s => ({ name: s, count: CARDS[s].length })),
     caseCost: CASE_COST, maxOwn: MAX_OWN, catalog: BUILDINGS });
 });
 app.get("/api/state", auth, async (req, res) => {
   const p = req.profile; settle(p); await saveProfile(p);
   res.json({ ok: true, profile: publicProfile(p), ...(await overlay(p.id)) });
-});
-app.get("/api/tops", auth, async (req, res) => {
-  const { data } = await sb.from("players").select("data");
-  const rows = (data || []).map(r => r.data);
-  const mk = f => rows.map(p => ({ n: p.name, v: f(p) })).sort((a, b) => b.v - a.v).slice(0, 10);
-  res.json({ ok: true, coins: mk(p => Math.round(p.coins || 0)), cards: mk(p => (p.units || []).length), power: mk(p => powerOf(p)) });
 });
 app.post("/api/case/open", auth, async (req, res) => {
   const p = req.profile; settle(p);
@@ -200,6 +183,7 @@ app.post("/api/build", auth, async (req, res) => {
   p.coins -= B.cost; p.buildings[tileId] = building; await saveProfile(p);
   res.json({ ok: true, profile: publicProfile(p), building: { tileId, b: building } });
 });
+// поставить юнита из резерва на свою клетку
 app.post("/api/place", auth, async (req, res) => {
   const p = req.profile; settle(p);
   const { unitId, tileId } = req.body;
@@ -211,6 +195,7 @@ app.post("/api/place", auth, async (req, res) => {
   u.pos = tileId; await saveProfile(p);
   res.json({ ok: true, profile: publicProfile(p) });
 });
+// переместить юнита на соседнюю свою клетку за 1⚡
 app.post("/api/move", auth, async (req, res) => {
   const p = req.profile; settle(p);
   const { unitId, tileId } = req.body;
@@ -265,7 +250,7 @@ app.post("/api/attack", auth, async (req, res) => {
       await saveProfile(o);
     }
     p.owned.push(tileId);
-    unit.pos = tileId; // юнит встаёт на последнюю захваченную клетку
+    unit.pos = tileId; // юнит встаёт на захваченную клетку
   }
   await saveProfile(p);
   res.json({ ok: true, result: { win, ap: Math.round(ap), dp: Math.round(dp), dmg, atkStat, defStat, enemy: !!defId },
@@ -283,6 +268,4 @@ if (BOT_TOKEN) {
 }
 
 app.listen(PORT, () => console.log(`🚀 Сервер на порту ${PORT}`));
-if (PING_URL) {
-  setInterval(() => { fetch(PING_URL).then(r => console.log("ping:", r.status)).catch(() => {}); }, 5 * 60 * 1000);
-}
+if (PING_URL) setInterval(() => { fetch(PING_URL).then(r => console.log("ping:", r.status)).catch(() => {}); }, 5 * 60 * 1000);

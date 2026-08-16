@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { api, unitImg } from "./api";
+import { playClick, playBuild, startAmbience, setAmbience, getVolumes, setVolumes } from "./sounds";
 
 const COLS = 800, ROWS = 600;
 const MAX_OWN = 300;
@@ -16,7 +17,6 @@ const TYPES = {
 };
 const SNAME = { attack: "Атака", defense: "Защита", air: "Воздух" };
 const SICON = { attack: "⚔️", defense: "🛡️", air: "🌪️" };
-
 const TILE = 3.4;
 const MAP_W = COLS * TILE, MAP_D = ROWS * TILE;
 const MCX = MAP_W / 2, MCZ = MAP_D / 2;
@@ -28,7 +28,6 @@ const autoPitch = d => 1.48 - clamp((d - MIN_D) / (MAX_D - MIN_D), 0, 1) * 0.53;
 const PAN_MARGIN = 260;
 const FOG_COLOR = 0x0d2438, FOG_NEAR = 240, FOG_FAR = 2300;
 const ROCK_C = new THREE.Color(0x8d928a), SNOW_C = new THREE.Color(0xeef3f5);
-
 const BUILDINGS_UI = {
   barn:   { n: "Амбар",      i: "🏚️", cost: 140, d: "+2 🪙/мин" },
   medbay: { n: "Медотсек",   i: "⛑️", cost: 160, d: "+8 HP юнитам/мин" },
@@ -38,7 +37,7 @@ const BUILDINGS_UI = {
 const BUILD_SLOTS = { field: ["barn", "medbay"], meadow: ["fort"], hills: ["mine"] };
 const pretty = n => n ? n.charAt(0).toUpperCase() + n.slice(1) : n;
 const ownerHue = o => { let h = 0; for (let i = 0; i < o.length; i++) h = (h * 31 + o.charCodeAt(i)) >>> 0; return (h % 360) / 360; };
-
+const hueHex = o => new THREE.Color().setHSL(ownerHue(o), 0.8, 0.55).getHex();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const hash2 = (r, c, salt = 0) => { let x = (r * 374761393 + c * 668265263 + salt * 69069) | 0; x = (x ^ (x >>> 13)) * 1274126177; return (x ^ (x >>> 16)) >>> 0; };
 const h01 = (r, c, s = 0) => (hash2(r, c, s) % 10000) / 10000;
@@ -170,7 +169,9 @@ const decorGeo = {
   crop: new THREE.BoxGeometry(0.06, 0.14, 0.52), bush: new THREE.IcosahedronGeometry(0.22, 0),
   reed: new THREE.CylinderGeometry(0.025, 0.035, 0.34, 4), flower: new THREE.CylinderGeometry(0.025, 0.025, 0.12, 4),
   ridge: new THREE.BoxGeometry(0.68, 0.18, 0.22), peak: new THREE.ConeGeometry(0.58, 1.15, 5), peakSmall: new THREE.ConeGeometry(0.34, 0.62, 5),
-  houseBase: new THREE.BoxGeometry(0.9, 0.7, 0.9), houseRoof: new THREE.ConeGeometry(0.75, 0.6, 4)
+  houseBase: new THREE.BoxGeometry(0.9, 0.7, 0.9), houseRoof: new THREE.ConeGeometry(0.75, 0.6, 4),
+  barn: new THREE.BoxGeometry(1.5, 0.9, 1.1), barnRoof: new THREE.ConeGeometry(1.05, 0.7, 4),
+  log: new THREE.CylinderGeometry(0.09, 0.09, 0.9, 5), stump: new THREE.CylinderGeometry(0.14, 0.18, 0.22, 6)
 };
 const mat = c => new THREE.MeshLambertMaterial({ color: c, flatShading: true });
 const MATS = {
@@ -180,21 +181,10 @@ const MATS = {
   fieldSide: mat(TYPES.field.side), swampSide: mat(TYPES.swamp.side), mountainSide: mat(TYPES.mountain.side),
   trunk: mat(0x6b4929), leaves: mat(0x2f7d36), rock: mat(0x7c8377), rock2: mat(0x969b8d),
   crop: mat(0xb6a940), bush: mat(0x4f8e34), reed: mat(0x5e8b47), flower: mat(0xd6d15b),
-  ridge: mat(0x626861), peak: mat(0x6f756e), snow: mat(0xe9f1f4), houseBase: mat(0x8a6a44),
+  ridge: mat(0x626861), peak: mat(0x6f756e), snow: mat(0xe9f1f4),
+  houseBase: mat(0x8a6a44), barn: mat(0x7a4a3a), stump: mat(0x7a5a34),
   water: new THREE.MeshLambertMaterial({ color: 0x1170aa })
 };
-
-function makeGlowTexture() {
-  const c = document.createElement("canvas"); c.width = c.height = 256;
-  const g = c.getContext("2d");
-  const gr = g.createRadialGradient(128, 128, 0, 128, 128, 128);
-  gr.addColorStop(0, "rgba(255,244,214,1)");
-  gr.addColorStop(0.22, "rgba(255,214,130,0.55)");
-  gr.addColorStop(0.6, "rgba(255,190,90,0.16)");
-  gr.addColorStop(1, "rgba(255,190,90,0)");
-  g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
-  return new THREE.CanvasTexture(c);
-}
 
 function needsSides(t, all) {
   const e = t.elev;
@@ -287,7 +277,7 @@ function createDecor(scene, arr) {
         const y = final ? it[2] : it[2] + geoOffset(geo) * s + SURFACE_EPS;
         d.position.set(it[0] + ox, y, it[1] + oz);
         if (geo === decorGeo.treeTrunk) d.scale.set(1, 1, 1); else d.scale.setScalar(s);
-        d.rotation.y = (geo === decorGeo.peak || geo === decorGeo.peakSmall || geo === decorGeo.houseRoof) ? ((hash2(i, j, 540 + per) % 1000) / 1000) * Math.PI * 2 : 0;
+        d.rotation.y = (geo === decorGeo.peak || geo === decorGeo.peakSmall) ? ((hash2(i, j, 540 + per) % 1000) / 1000) * Math.PI * 2 : 0;
         d.updateMatrix();
         mesh.setMatrixAt(k++, d.matrix);
       }
@@ -337,7 +327,6 @@ function applyInstanceColors(inst, territories, reachable, selectedId) {
     else if (t.owner) color.setHex(0xd9564a).multiplyScalar(t.shade || 1);
     else if (reachable.has(t.id)) color.setHex(TYPES[t.type].top).multiplyScalar((t.shade || 1) * 1.35);
     else color.setHex(TYPES[t.type].top).multiplyScalar(t.shade || 1);
-    // высотная тонировка: склоны каменеют, вершины в снегу
     if (t.type !== "water" && t.elev > 0.45) {
       color.lerp(ROCK_C, clamp((t.elev - 0.45) / 1.2, 0, 1) * 0.8);
       if (t.elev > 1.9) color.lerp(SNOW_C, clamp((t.elev - 1.9) / 0.8, 0, 1));
@@ -356,26 +345,28 @@ function createAnimatedOcean() {
       uFogColor: { value: new THREE.Color(FOG_COLOR) },
       uFogNear: { value: FOG_NEAR }, uFogFar: { value: FOG_FAR }
     },
-    vertexShader: `uniform float uTime; varying float vWave; varying float vDepth;
-      void main(){ vec3 p=position;
-        float w=sin(p.x*0.020+uTime*0.60)*0.30+cos(p.y*0.026-uTime*0.42)*0.24+sin((p.x+p.y)*0.011+uTime*0.30)*0.16;
-        p.z+=w; vWave=w; vec4 mv=modelViewMatrix*vec4(p,1.0); vDepth=-mv.z; gl_Position=projectionMatrix*mv; }`,
-    fragmentShader: `uniform vec3 uColor; uniform vec3 uDeep; uniform vec3 uFogColor; uniform float uFogNear; uniform float uFogFar;
-      varying float vWave; varying float vDepth;
-      void main(){ float k=clamp((vWave+0.70)/1.40,0.0,1.0); vec3 c=mix(uDeep,uColor,k);
-        c+=vec3(0.10,0.14,0.16)*pow(k,3.0);
-        float f=smoothstep(uFogNear,uFogFar,vDepth); c=mix(c,uFogColor,f); gl_FragColor=vec4(c,1.0); }`
+    vertexShader: `uniform float uTime; varying float vWave; varying float vDepth; void main(){ vec3 p=position; float w=sin(p.x*0.020+uTime*0.60)*0.30+cos(p.y*0.026-uTime*0.42)*0.24+sin((p.x+p.y)*0.011+uTime*0.30)*0.16; p.z+=w; vWave=w; vec4 mv=modelViewMatrix*vec4(p,1.0); vDepth=-mv.z; gl_Position=projectionMatrix*mv; }`,
+    fragmentShader: `uniform vec3 uColor; uniform vec3 uDeep; uniform vec3 uFogColor; uniform float uFogNear; uniform float uFogFar; varying float vWave; varying float vDepth; void main(){ float k=clamp((vWave+0.70)/1.40,0.0,1.0); vec3 c=mix(uDeep,uColor,k); c+=vec3(0.10,0.14,0.16)*pow(k,3.0); float f=smoothstep(uFogNear,uFogFar,vDepth); c=mix(c,uFogColor,f); gl_FragColor=vec4(c,1.0); }`
   });
   const mesh = new THREE.Mesh(geo, m);
   mesh.rotation.x = -Math.PI / 2; mesh.position.y = -0.75;
   return mesh;
 }
+function makeGlowTexture() {
+  const c = document.createElement("canvas"); c.width = c.height = 256;
+  const g = c.getContext("2d");
+  const gr = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  gr.addColorStop(0, "rgba(255,244,214,1)"); gr.addColorStop(0.22, "rgba(255,214,130,0.55)");
+  gr.addColorStop(0.6, "rgba(255,190,90,0.16)"); gr.addColorStop(1, "rgba(255,190,90,0)");
+  g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+}
 
 // ================= 3D-ЭКРАН =================
-function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev, borders, reach, pins, houses }) {
+function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev, borders, reach, pins, settlements, onDrop }) {
   const mountRef = useRef(null), R = useRef({});
-  const dataRef = useRef({ territories, onSelect, selectedId, reachable, onReady, onProgress });
-  useEffect(() => { dataRef.current = { territories, onSelect, selectedId, reachable, onReady, onProgress }; });
+  const dataRef = useRef({ territories, onSelect, selectedId, reachable, onReady, onProgress, onDrop });
+  useEffect(() => { dataRef.current = { territories, onSelect, selectedId, reachable, onReady, onProgress, onDrop }; });
 
   useEffect(() => {
     const mount = mountRef.current, r = R.current;
@@ -384,6 +375,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     scene.background = new THREE.Color(FOG_COLOR);
     scene.fog = new THREE.Fog(FOG_COLOR, FOG_NEAR, FOG_FAR);
     r.scene = scene;
+    r.flights = [];
+    r.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
     const camera = new THREE.PerspectiveCamera(FOV, W / Math.max(1, H), 0.1, 4200);
     r.camera = camera;
@@ -402,7 +395,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     renderer.setSize(W, H);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;   // «киношный» цвет
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.15;
     mount.appendChild(renderer.domElement);
     r.renderer = renderer;
@@ -412,26 +405,18 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     renderer.domElement.addEventListener("webglcontextlost", onLost, false);
     renderer.domElement.addEventListener("webglcontextrestored", onRestored, false);
 
-    // тёплое солнце + небо
     scene.add(new THREE.HemisphereLight(0xbfe3ff, 0x3a5a30, 1.0));
     const sun = new THREE.DirectionalLight(0xffe0b3, 2.2);
     sun.position.set(-60, 120, 40); scene.add(sun);
     const fill = new THREE.DirectionalLight(0x88aaff, 0.35);
     fill.position.set(80, 60, -90); scene.add(fill);
-
-    // солнце-диск с лучами на небе
     const glow = makeGlowTexture();
     const sunSpr = new THREE.Sprite(new THREE.SpriteMaterial({ map: glow, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }));
-    sunSpr.scale.set(1400, 1400, 1);
-    sunSpr.position.set(-1600, 1500, -1000);
-    scene.add(sunSpr);
+    sunSpr.scale.set(1400, 1400, 1); sunSpr.position.set(-1600, 1500, -1000); scene.add(sunSpr);
     const sunCore = new THREE.Sprite(new THREE.SpriteMaterial({ map: glow, color: 0xfff6dd, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
-    sunCore.scale.set(420, 420, 1);
-    sunCore.position.set(-1600, 1500, -1000);
-    scene.add(sunCore);
+    sunCore.scale.set(420, 420, 1); sunCore.position.set(-1600, 1500, -1000); scene.add(sunCore);
 
     const ocean = createAnimatedOcean(); scene.add(ocean); r.ocean = ocean;
-
     const sel = new THREE.Mesh(new THREE.PlaneGeometry(TILE - 0.09, TILE - 0.09), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide }));
     sel.rotation.x = -Math.PI / 2; sel.visible = false; scene.add(sel); r.selection = sel;
 
@@ -447,7 +432,6 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       return { x: (cr + 0.5) * ts * TILE - MCX, z: (cc + 0.5) * ts * TILE - MCZ };
     };
     const chunkDist = key => { const c = chunkCenter(key); const dx = c.x - r.targetX, dz = c.z - r.targetZ; return dx * dx + dz * dz; };
-
     const desiredChunkKeys = () => {
       const cw = Math.max(2, mount.clientWidth), ch = Math.max(2, mount.clientHeight);
       const a = cw / ch, hh = r.dist * TAN, hw = hh * a;
@@ -513,9 +497,47 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
         r.refreshChunks();
       }
       processChunkQueue();
-      if (r.ocean?.material?.uniforms?.uTime) r.ocean.material.uniforms.uTime.value = performance.now() * 0.001;
+      if (r.ocean?.material?.uniforms?.uTime)
+        r.ocean.material.uniforms.uTime.value = performance.now() * 0.001;
+      if (frames % 12 === 0) {
+        const tiles = dataRef.current.territories;
+        if (tiles) {
+          const cx = Math.round((r.targetX + MCX) / TILE), cz = Math.round((r.targetZ + MCZ) / TILE);
+          let f = 0, m = 0, s = 0, tot = 0;
+          for (let dr = -6; dr <= 6; dr += 2) for (let dc = -6; dc <= 6; dc += 2) {
+            const r2 = cz + dr, c2 = cx + dc;
+            tot++;
+            if (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS) { s++; continue; }
+            const tt = tiles[r2 * COLS + c2];
+            if (tt.type === "forest") f++;
+            else if (tt.type === "mountain") m++;
+            else if (tt.type === "water") s++;
+          }
+          const close = clamp(1 - (r.dist - MIN_D) / (MAX_D - MIN_D), 0, 1); // ближе к земле = громче
+          const g = 0.15 + 0.85 * close;
+          setAmbience({ forest: (f / tot) * g, mountain: (m / tot) * g, sea: (s / tot) * g });
+        }
+      }
       if (r.selection.visible) r.selection.material.opacity = 0.10 + 0.07 * Math.sin(performance.now() * 0.004);
       if (r.reachMesh) r.reachMesh.material.opacity = 0.14 + 0.12 * Math.sin(performance.now() * 0.0035);
+      // полёты юнитов по дуге
+      if (r.flights.length) {
+        const now = performance.now();
+        for (let i = r.flights.length - 1; i >= 0; i--) {
+          const f = r.flights[i];
+          const t = (now - f.t0) / f.dur;
+          if (t >= 1) {
+            scene.remove(f.spr); scene.remove(f.ring);
+            f.spr.material.dispose();
+            r.flights.splice(i, 1);
+          } else {
+            const e = t * t * (3 - 2 * t);
+            f.spr.position.set(f.from.x + (f.to.x - f.from.x) * e, f.from.y + (f.to.y - f.from.y) * e + Math.sin(e * Math.PI) * 3, f.from.z + (f.to.z - f.from.z) * e);
+            f.ring.position.set(f.spr.position.x, f.gy + 0.06, f.spr.position.z);
+            f.ring.scale.setScalar(1 + Math.sin(e * Math.PI) * 0.5);
+          }
+        }
+      }
       frames++;
       if (frames % 30 === 0) {
         const details = r.dist < 170, sides = r.dist < 320;
@@ -548,6 +570,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     };
   }, []);
 
+  // цвета + выделение
   useEffect(() => {
     const r = R.current;
     if (!r.chunks) return;
@@ -573,8 +596,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       d.scale.set(TILE + 0.10, 0.10, 0.26);
       d.updateMatrix();
       m.setMatrixAt(i, d.matrix);
-      if (b.owner === "me") c.setHex(0xffd75e);
-      else c.setHSL(ownerHue(b.owner), 0.85, 0.6);
+      if (b.owner === "me") c.setHex(0xffd75e); else c.setHSL(ownerHue(b.owner), 0.85, 0.6);
       m.setColorAt(i, c);
     });
     m.instanceMatrix.needsUpdate = true;
@@ -597,7 +619,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.scene.add(m); r.reachMesh = m;
   }, [reach]);
 
-  // юниты стоят в 3D: кольцо владельца + карточка-спрайт
+  // пины юнитов: кольцо + карточка; свои — перетаскиваемые
   useEffect(() => {
     const r = R.current;
     if (!r.scene) return;
@@ -606,54 +628,63 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       r.pinGroup.traverse(o => { if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); } });
       r.pinGroup = null;
     }
+    r.pinSprites = new Map();
     if (!pins || !pins.length) return;
     const group = new THREE.Group();
     const loader = r.texLoader || (r.texLoader = new THREE.TextureLoader());
     for (const q of pins) {
-      const col = q.mine ? 0xc4b5fd : new THREE.Color().setHSL(ownerHue(q.owner), 0.85, 0.65).getHex();
+      const col = q.mine ? 0xc4b5fd : hueHex(q.owner);
       const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.set(q.x, q.y + 0.04, q.z);
+      ring.rotation.x = -Math.PI / 2; ring.position.set(q.x, q.y + 0.04, q.z);
       group.add(ring);
       if (q.url) {
         const tex = loader.load(q.url);
         tex.colorSpace = THREE.SRGBColorSpace;
         const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
-        sp.scale.set(2.8, 2.8, 1);
+        sp.scale.set(q.mine ? 3.0 : 2.6, q.mine ? 3.0 : 2.6, 1);
         sp.position.set(q.x, q.y + 2.2, q.z);
         group.add(sp);
+        if (q.mine) r.pinSprites.set(q.uid, { sprite: sp, uid: q.uid, x: q.x, y: q.y, z: q.z, mine: true, pos: q.pos });
       }
     }
     r.scene.add(group); r.pinGroup = group;
   }, [pins]);
 
-  // поселения: домики на своих клетках
+  // поселения: разные постройки по биому внутри территорий
   useEffect(() => {
     const r = R.current;
     if (!r.scene) return;
-    if (r.houseBaseMesh) { r.scene.remove(r.houseBaseMesh); r.houseBaseMesh.dispose(); r.houseBaseMesh = null; }
-    if (r.houseRoofMesh) { r.scene.remove(r.houseRoofMesh); r.houseRoofMesh.dispose(); r.houseRoofMesh = null; }
-    if (!houses || !houses.length) return;
-    const mb = new THREE.InstancedMesh(decorGeo.houseBase, MATS.houseBase, houses.length);
-    if (!r.roofMat) r.roofMat = new THREE.MeshBasicMaterial();
-    const mr = new THREE.InstancedMesh(decorGeo.houseRoof, r.roofMat, houses.length);
-    const d = new THREE.Object3D(), c = new THREE.Color();
-    houses.forEach((q, i) => {
-      const rot = ((hash2(Math.round(q.x * 7), Math.round(q.z * 7), 555) % 1000) / 1000) * Math.PI * 2;
-      d.position.set(q.x, q.y + 0.35, q.z); d.rotation.set(0, rot, 0); d.scale.setScalar(1); d.updateMatrix();
-      mb.setMatrixAt(i, d.matrix);
-      d.position.set(q.x, q.y + 0.95, q.z); d.updateMatrix();
-      mr.setMatrixAt(i, d.matrix);
-      if (q.mine) c.setHex(0xffd75e); else c.setHSL(ownerHue(q.owner), 0.8, 0.55);
-      mr.setColorAt(i, c);
-    });
-    mb.instanceMatrix.needsUpdate = true; mr.instanceMatrix.needsUpdate = true;
-    if (mr.instanceColor) mr.instanceColor.needsUpdate = true;
-    r.scene.add(mb); r.scene.add(mr);
-    r.houseBaseMesh = mb; r.houseRoofMesh = mr;
-  }, [houses]);
+    if (r.setlMeshes) { for (const m of r.setlMeshes) { r.scene.remove(m); m.dispose(); } r.setlMeshes = null; }
+    if (!settlements) return;
+    const d = new THREE.Object3D();
+    const meshes = [];
+    const build = (geo, material, items, withColor, yOff, lay) => {
+      if (!items.length) return;
+      const m = new THREE.InstancedMesh(geo, material, items.length);
+      items.forEach((it, i) => {
+        const [x, y, z, rot, col] = it;
+        d.position.set(x, y + yOff, z);
+        d.rotation.set(0, rot, lay ? Math.PI / 2 : 0);
+        d.updateMatrix();
+        m.setMatrixAt(i, d.matrix);
+        if (withColor && col != null) m.setColorAt(i, new THREE.Color(col));
+      });
+      m.instanceMatrix.needsUpdate = true;
+      if (m.instanceColor) m.instanceColor.needsUpdate = true;
+      r.scene.add(m); meshes.push(m);
+    };
+    build(decorGeo.houseBase, MATS.houseBase, settlements.houses, false, 0.35);
+    build(decorGeo.houseRoof, r.roofMat || (r.roofMat = new THREE.MeshLambertMaterial({ color: 0xffffff })), settlements.roofs, true, 0.95);
+    build(decorGeo.barn, MATS.barn, settlements.barns, false, 0.45);
+    build(decorGeo.barnRoof, r.barnRoofMat || (r.barnRoofMat = new THREE.MeshLambertMaterial({ color: 0xffffff })), settlements.barnRoofs, true, 1.15);
+    build(decorGeo.crop, MATS.crop, settlements.crops, false, 0.07);
+    build(decorGeo.log, MATS.trunk, settlements.logs, false, 0.09, true);
+    build(decorGeo.stump, MATS.stump, settlements.stumps, false, 0.11);
+    build(decorGeo.rockSmall, MATS.rock2, settlements.rocks, false, 0.13);
+    r.setlMeshes = meshes;
+  }, [settlements]);
 
-  // управление
+  // управление + drag&drop юнитов
   useEffect(() => {
     const mount = mountRef.current, r = R.current;
     if (!mount) return;
@@ -678,31 +709,115 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
         resetView: () => { r.panTargetX = 0; r.panTargetZ = 0; r.distTarget = START_D; r.yaw = 0.32; r.pitchOff = 0; r.updateCameraPose(); }
       };
     }
-    const doClick = (cx, cy) => {
+    const setMouse = (cx, cy) => {
       const rect = mount.getBoundingClientRect();
       r.mouse2D.x = ((cx - rect.left) / rect.width) * 2 - 1;
       r.mouse2D.y = -((cy - rect.top) / rect.height) * 2 + 1;
       r.raycaster.setFromCamera(r.mouse2D, r.camera);
+    };
+    const pickTile = (cx, cy) => {
+      setMouse(cx, cy);
       const targets = [];
       for (const chunk of r.chunks.values()) for (const g of Object.values(chunk.inst.groups)) targets.push(g.top);
       const hits = r.raycaster.intersectObjects(targets, false);
-      if (!hits.length || hits[0].instanceId == null) return;
+      if (!hits.length || hits[0].instanceId == null) return null;
       const obj = hits[0].object, idx = hits[0].instanceId;
-      let found = null;
-      for (const chunk of r.chunks.values()) {
-        for (const g of Object.values(chunk.inst.groups)) if (g.top === obj) { found = g.arr[idx]; break; }
-        if (found) break;
-      }
-      if (found) dataRef.current.onSelect(found);
+      for (const chunk of r.chunks.values()) for (const g of Object.values(chunk.inst.groups)) if (g.top === obj) return g.arr[idx];
+      return null;
     };
+    const pickSprite = (cx, cy) => {
+      setMouse(cx, cy);
+      const sprites = [];
+      if (r.pinSprites) for (const o of r.pinSprites.values()) sprites.push(o.sprite);
+      const hits = r.raycaster.intersectObjects(sprites, false);
+      if (!hits.length) return null;
+      for (const o of r.pinSprites.values()) if (o.sprite === hits[0].object) return o;
+      return null;
+    };
+    const groundPoint = (cx, cy, out) => { setMouse(cx, cy); return r.raycaster.ray.intersectPlane(r.groundPlane, out); };
+
+    const buildDragMesh = list => {
+      if (r.dragMesh) { r.scene.remove(r.dragMesh); r.dragMesh.dispose(); r.dragMesh = null; }
+      if (!list.length) return;
+      if (!r.dragGeo) r.dragGeo = new THREE.PlaneGeometry(TILE - 0.2, TILE - 0.2);
+      const m = new THREE.InstancedMesh(r.dragGeo, new THREE.MeshBasicMaterial({ color: 0xffd75e, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }), list.length);
+      const d = new THREE.Object3D();
+      list.forEach((q, i) => { d.position.set(q.x, q.y + 0.05, q.z); d.rotation.x = -Math.PI / 2; d.updateMatrix(); m.setMatrixAt(i, d.matrix); });
+      m.instanceMatrix.needsUpdate = true;
+      r.scene.add(m); r.dragMesh = m;
+    };
+    const startDrag = (o, cx, cy) => {
+      const valid = new Set();
+      for (const id of dataRef.current.reachable) valid.add(id);
+      if (o.pos) {
+        const [rr, cc] = o.pos.split("_").map(Number);
+        for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+          const r2 = rr + dr, c2 = cc + dc;
+          if (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS) continue;
+          const t = dataRef.current.territories[r2 * COLS + c2];
+          if (t && t.owner === "me") valid.add(t.id);
+        }
+      }
+      const list = [];
+      for (const id of valid) {
+        const [rr, cc] = id.split("_").map(Number);
+        const t = dataRef.current.territories[rr * COLS + cc];
+        if (t) { const p = toXZ(t.col, t.row); list.push({ x: p.x, z: p.z, y: tileTop(t) }); }
+      }
+      r.drag = { o, valid, lastX: cx, lastY: cy };
+      o.sprite.visible = false;
+      buildDragMesh(list);
+      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: o.sprite.material.map, transparent: true, opacity: 0.85 }));
+      spr.scale.set(3, 3, 1); spr.position.set(o.x, 1.8, o.z);
+      const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffd75e, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+      ring.rotation.x = -Math.PI / 2; ring.position.set(o.x, 0.06, o.z);
+      r.scene.add(spr); r.scene.add(ring);
+      r.dragGhost = { spr, ring };
+    };
+    const moveDrag = (cx, cy) => {
+      r.drag.lastX = cx; r.drag.lastY = cy;
+      const pt = new THREE.Vector3();
+      if (groundPoint(cx, cy, pt)) {
+        r.dragGhost.spr.position.set(pt.x, 1.8, pt.z);
+        r.dragGhost.ring.position.set(pt.x, 0.06, pt.z);
+      }
+    };
+    const endDragVisual = () => {
+      if (r.drag && r.drag.o) r.drag.o.sprite.visible = true;
+      if (r.dragGhost) { r.scene.remove(r.dragGhost.spr); r.scene.remove(r.dragGhost.ring); r.dragGhost.spr.material.dispose(); r.dragGhost = null; }
+      if (r.dragMesh) { r.scene.remove(r.dragMesh); r.dragMesh.dispose(); r.dragMesh = null; }
+    };
+    const finishDrag = (cx, cy) => {
+      const o = r.drag.o, valid = r.drag.valid;
+      const t = pickTile(cx, cy);
+      const from = { x: o.x, y: o.y + 2.2, z: o.z };
+      endDragVisual();
+      r.drag = null;
+      if (t && valid.has(t.id)) {
+        const p = toXZ(t.col, t.row);
+        const gy = tileTop(t);
+        const to = { x: p.x, y: gy + 2.2, z: p.z };
+        const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: o.sprite.material.map, transparent: true }));
+        spr.scale.set(3, 3, 1); spr.position.set(from.x, from.y, from.z);
+        const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xffd75e, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+        ring.rotation.x = -Math.PI / 2; ring.position.set(from.x, gy + 0.06, from.z);
+        r.scene.add(spr); r.scene.add(ring);
+        r.flights.push({ spr, ring, from, to, gy, t0: performance.now(), dur: 650 });
+        dataRef.current.onDrop(o.uid, t.id, t.owner === "me" ? "move" : "attack");
+      }
+    };
+
     let down = false, moved = false, movedDist = 0, downTime = 0, lastX = 0, lastY = 0, rotating = false;
     const downFn = e => {
       if (e.button !== undefined && e.button === 2) { rotating = true; moved = false; lastX = e.clientX; lastY = e.clientY; mount.style.cursor = "ew-resize"; return; }
       if (e.button !== undefined && e.button !== 0) return;
+      const hit = pickSprite(e.clientX, e.clientY);
+      if (hit) { startDrag(hit, e.clientX, e.clientY); return; }
       down = true; moved = false; movedDist = 0; downTime = performance.now(); lastX = e.clientX; lastY = e.clientY; mount.style.cursor = "grabbing";
     };
     const moveFn = e => {
       const dx = e.clientX - lastX, dy = e.clientY - lastY;
+      if (r.drag) { moveDrag(e.clientX, e.clientY); return; }
       if (rotating) {
         r.yaw -= dx * 0.008;
         r.pitchOff = clamp((r.pitchOff || 0) - dy * 0.006, -0.6, 0.6);
@@ -717,16 +832,23 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       lastX = e.clientX; lastY = e.clientY;
     };
     const upFn = e => {
+      if (r.drag) { finishDrag(e.clientX, e.clientY); return; }
       if (rotating) { rotating = false; mount.style.cursor = "grab"; return; }
       if (!down) return;
-      if (!moved && performance.now() - downTime < 700) doClick(e.clientX, e.clientY);
+      if (!moved && performance.now() - downTime < 700) {
+        const t = pickTile(e.clientX, e.clientY);
+        if (t) dataRef.current.onSelect(t);
+      }
       down = false; mount.style.cursor = "grab";
     };
     const wheelFn = e => { e.preventDefault(); zoomBy(Math.exp(-e.deltaY * 0.0012)); };
     const dblFn = () => zoomBy(1.5);
     const touchStart = e => {
-      if (e.touches.length === 1) r.touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, m: false, d: 0, t: Date.now() };
-      else if (e.touches.length >= 2) {
+      if (e.touches.length === 1) {
+        const hit = pickSprite(e.touches[0].clientX, e.touches[0].clientY);
+        if (hit) { startDrag(hit, e.touches[0].clientX, e.touches[0].clientY); return; }
+        r.touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, m: false, d: 0, t: Date.now() };
+      } else if (e.touches.length >= 2) {
         r.touch = null;
         const dx = e.touches[0].clientX - e.touches[1].clientX, dy = e.touches[0].clientY - e.touches[1].clientY;
         r.pinch = Math.hypot(dx, dy);
@@ -735,6 +857,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     };
     const touchMove = e => {
       e.preventDefault();
+      if (r.drag && e.touches.length === 1) { moveDrag(e.touches[0].clientX, e.touches[0].clientY); return; }
       if (e.touches.length === 1 && r.touch) {
         const dx = e.touches[0].clientX - r.touch.x, dy = e.touches[0].clientY - r.touch.y;
         r.touch.d += Math.abs(dx) + Math.abs(dy);
@@ -756,7 +879,11 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       }
     };
     const touchEnd = () => {
-      if (r.touch && !r.touch.m && r.touch.d < 14 && Date.now() - r.touch.t < 700) doClick(r.touch.x, r.touch.y);
+      if (r.drag) { finishDrag(r.drag.lastX, r.drag.lastY); return; }
+      if (r.touch && !r.touch.m && r.touch.d < 14 && Date.now() - r.touch.t < 700) {
+        const t = pickTile(r.touch.x, r.touch.y);
+        if (t) dataRef.current.onSelect(t);
+      }
       r.touch = null; r.pinch = 0; r.twoFinger = null;
     };
     const leaveFn = () => { down = false; rotating = false; mount.style.cursor = "grab"; };
@@ -780,10 +907,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", background: "#0a1620" }}>
       <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
-      <div style={{ position: "absolute", right: 12, top: 12, background: "rgba(8,16,10,.74)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 11, padding: "8px 10px", fontSize: 10, lineHeight: 1.65, pointerEvents: "none", backdropFilter: "blur(4px)" }}>
-        <div style={{ fontWeight: 800, marginBottom: 3 }}>Биомы</div>
-        <div>🌿 Луг</div><div>🌲 Лес · защита</div><div>⛰️ Холмы · защита</div>
-        <div>🌾 Поля</div><div>🪷 Болота · воздух</div><div>🏔️ Горы · непроходимы</div>
+      <div style={{ position: "absolute", left: 12, bottom: 64, fontSize: 10, color: "#ffffff66", pointerEvents: "none" }}>
+        Тяни — панорама · ПКМ — поворот · Колесо/пинч — зум · Своего юнита можно перетащить
       </div>
     </div>
   );
@@ -797,17 +922,23 @@ function Btn({ onClick, disabled, variant = "primary", children, style }) {
 function ZoomBtn({ onClick, children }) {
   return <button onClick={onClick} style={{ width: 42, height: 42, borderRadius: 12, border: "1px solid rgba(255,255,255,.14)", background: "rgba(8,16,16,.82)", color: "#e6eee8", fontSize: 20, fontWeight: 800, cursor: "pointer", lineHeight: 1 }}>{children}</button>;
 }
-function Hud({ profile, supplyEta, now }) {
+const hudBtn = { width: 38, height: 38, borderRadius: 10, border: "1px solid rgba(255,255,255,.12)", background: "rgba(8,16,16,.82)", fontSize: 17, cursor: "pointer" };
+function Hud({ profile, supplyEta, now, onInv, onCase, onSettings }) {
   let timer = "";
   if (profile.supplies < profile.supplyMax && supplyEta) {
     const s = Math.max(0, Math.ceil((supplyEta - now) / 1000));
     timer = ` (${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")})`;
   }
   return (
-    <div style={{ position: "absolute", left: 12, top: 12, padding: "7px 12px", borderRadius: 10, background: "rgba(8,16,16,.82)", border: "1px solid rgba(255,255,255,.08)", fontSize: 12, fontWeight: 800, pointerEvents: "none" }}>
-      🪙 {profile.coins}{profile.income > 0 && <span style={{ color: "#7fd18a", fontWeight: 600 }}> +{profile.income}/м</span>}
-      <span style={{ marginLeft: 12 }}>⚡ {profile.supplies}/{profile.supplyMax}<span style={{ color: PAL.muted, fontWeight: 600 }}>{timer}</span></span>
-      <span style={{ marginLeft: 12 }}>🏔️ {profile.owned.length}/{MAX_OWN}</span>
+    <div style={{ position: "absolute", left: 12, top: 12, display: "flex", gap: 8, alignItems: "center" }}>
+      <div style={{ padding: "7px 12px", borderRadius: 10, background: "rgba(8,16,16,.82)", border: "1px solid rgba(255,255,255,.08)", fontSize: 12, fontWeight: 800, pointerEvents: "none" }}>
+        🪙 {profile.coins}{profile.income > 0 && <span style={{ color: "#7fd18a", fontWeight: 600 }}> +{profile.income}/м</span>}
+        <span style={{ marginLeft: 12 }}>⚡ {profile.supplies}/{profile.supplyMax}<span style={{ color: PAL.muted, fontWeight: 600 }}>{timer}</span></span>
+        <span style={{ marginLeft: 12 }}>🏔️ {profile.owned.length}/{MAX_OWN}</span>
+      </div>
+      <button onClick={onInv} style={hudBtn}>🎒</button>
+      <button onClick={onCase} style={hudBtn}>📦</button>
+      <button onClick={onSettings} style={hudBtn}>⚙️</button>
     </div>
   );
 }
@@ -828,7 +959,7 @@ function UnitChip({ u, sel, onClick }) {
 function Modal({ title, onClose, children }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.72)", zIndex: 50, display: "flex", alignItems: "flex-end" }} onClick={onClose}>
-      <div style={{ background: PAL.surf, borderRadius: "20px 20px 0 0", padding: 18, width: "100%", borderTop: "1px solid " + PAL.border, maxHeight: "80dvh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+      <div style={{ background: PAL.surf, borderRadius: "20px 20px 0 0", padding: 18, width: "100%", borderTop: "1px solid " + PAL.border, maxHeight: "85dvh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
         <div style={{ fontSize: 20, fontWeight: 900, marginBottom: 12 }}>{title}</div>
         {children}
         <Btn variant="ghost" onClick={onClose} style={{ marginTop: 10 }}>Закрыть</Btn>
@@ -836,205 +967,162 @@ function Modal({ title, onClose, children }) {
     </div>
   );
 }
-
-// рулетка как в CS
-function Roulette({ pool, winner, onDone }) {
-  const boxRef = useRef(null);
-  const [off, setOff] = useState(0);
-  const [run, setRun] = useState(false);
-  const ITEM = 108;
-  const items = useMemo(() => {
-    const arr = [];
-    for (let i = 0; i < 50; i++) arr.push(pool[Math.floor(Math.random() * pool.length)] || winner);
-    arr[44] = winner;
-    return arr;
-  }, [pool, winner]);
-  useEffect(() => {
-    const el = boxRef.current;
-    if (!el) return;
-    const target = 44 * ITEM + ITEM / 2 - el.clientWidth / 2 + (Math.random() * 50 - 25);
-    const t1 = requestAnimationFrame(() => requestAnimationFrame(() => { setOff(-target); setRun(true); }));
-    const t2 = setTimeout(onDone, 5300);
-    return () => { cancelAnimationFrame(t1); clearTimeout(t2); };
-  }, []);
-  return (
-    <div ref={boxRef} style={{ position: "relative", overflow: "hidden", borderRadius: 12, border: "1px solid " + PAL.border, background: "#0a1410", height: 132, marginBottom: 12 }}>
-      <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 3, background: PAL.gold, zIndex: 2, boxShadow: "0 0 12px " + PAL.gold }} />
-      <div style={{ display: "flex", gap: 12, padding: "12px 0", willChange: "transform", transform: `translateX(${off}px)`, transition: run ? "transform 5s cubic-bezier(0.1,0.7,0.15,1)" : "none" }}>
-        {items.map((it, i) => (
-          <div key={i} style={{ width: 96, flexShrink: 0, background: PAL.bg, border: "1px solid " + PAL.border, borderRadius: 10, padding: 6, textAlign: "center" }}>
-            <img src={`/files/${encodeURIComponent(it.server || winner.server)}/${encodeURIComponent(it.file)}`} onError={e => e.target.style.display = "none"} style={{ width: "100%", height: 64, objectFit: "cover", borderRadius: 6 }} />
-            <div style={{ fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden" }}>{it.name}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, onBuild, onClose, result, canInteract, busy, freePlace, stationed, idle, onPlace, onMoveStart }) {
+function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, onBuild, onClose, result, canInteract, busy, freePlace, idle, onPlace }) {
   const ti = TYPES[t.type], isOwn = t.owner === "me";
   const slots = BUILD_SLOTS[t.type] || [];
   const usable = profile.units.filter(u => u.hp > 0);
   return (
-    <Modal title={`${ti.e} ${ti.n}`} onClose={onClose}>
-      <div style={{ fontSize: 12, color: PAL.textD, margin: "-6px 0 12px" }}>
-        {building ? `${BUILDINGS_UI[building.b].i} ${BUILDINGS_UI[building.b].n} — ${BUILDINGS_UI[building.b].d}` :
-          ti.bonus ? `+${Math.round((ti.m - 1) * 100)}% ${SNAME[ti.bonus]} для защиты` : ti.impassable ? "Непроходимая зона" : "Обычная местность"}
-        {(t.type === "field" || t.type === "hills") && <span style={{ color: "#7fd18a" }}> · +1 🪙/мин пассивно</span>}
-      </div>
-      {result && !result.error && (
-        <div style={{ padding: 12, borderRadius: 11, marginBottom: 10, background: result.win ? "#092613" : "#2d0a0a", border: `1px solid ${result.win ? "#1d9b55" : "#c43838"}` }}>
-          <b>{result.win ? "🏆 Захвачено" : "💀 Неудача"}</b>
-          <div style={{ fontSize: 12, color: PAL.textD, marginTop: 4 }}>{SICON[result.atkStat]} {result.ap} vs {SICON[result.defStat]} {result.dp} · юнит −{result.dmg} HP</div>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.72)", zIndex: 50, display: "flex", alignItems: "flex-end" }} onClick={onClose}>
+      <div style={{ background: PAL.surf, borderRadius: "20px 20px 0 0", padding: 18, width: "100%", borderTop: "1px solid " + PAL.border, maxHeight: "80dvh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize: 22, fontWeight: 900 }}>{ti.e} {ti.n}</div>
+        <div style={{ fontSize: 12, color: PAL.textD, margin: "4px 0 12px" }}>
+          {building ? `${BUILDINGS_UI[building.b].i} ${BUILDINGS_UI[building.b].n} — ${BUILDINGS_UI[building.b].d}` :
+            ti.bonus ? `+${Math.round((ti.m - 1) * 100)}% ${SNAME[ti.bonus]} для защиты` : ti.impassable ? "Непроходимая зона" : "Обычная местность"}
+          {(t.type === "field" || t.type === "hills") && <span style={{ color: "#7fd18a" }}> · +1 🪙/мин пассивно</span>}
         </div>
-      )}
-      {result?.error && <div style={{ fontSize: 12, color: PAL.red, marginBottom: 10 }}>⚠️ {result.error}</div>}
-      {isOwn && (stationed.length > 0 || idle.length > 0) && (
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Юниты (📍 поставить / ➡️ идти ⚡1):</div>
-          <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6 }}>
-            {stationed.map(u => (
-              <div key={u.uid} style={{ position: "relative" }}>
-                <UnitChip u={u} />
-                <button onClick={() => onMoveStart(u.uid)} style={{ position: "absolute", right: 2, top: 2, width: 26, height: 26, borderRadius: 8, border: "none", background: PAL.accent, color: "#fff", fontWeight: 800, cursor: "pointer" }}>➡️</button>
-              </div>
-            ))}
-            {idle.map(u => (
-              <div key={u.uid} style={{ position: "relative" }}>
-                <UnitChip u={u} />
-                <button onClick={() => onPlace(u.uid)} style={{ position: "absolute", right: 2, top: 2, width: 26, height: 26, borderRadius: 8, border: "none", background: "#087f3f", color: "#fff", fontWeight: 800, cursor: "pointer" }}>📍</button>
-              </div>
+        {result && !result.error && (
+          <div style={{ padding: 12, borderRadius: 11, marginBottom: 10, background: result.win ? "#092613" : "#2d0a0a", border: `1px solid ${result.win ? "#1d9b55" : "#c43838"}` }}>
+            <b>{result.win ? "🏆 Захвачено" : "💀 Неудача"}</b>
+            <div style={{ fontSize: 12, color: PAL.textD, marginTop: 4 }}>{SICON[result.atkStat]} {result.ap} vs {SICON[result.defStat]} {result.dp} · юнит −{result.dmg} HP</div>
+          </div>
+        )}
+        {result?.error && <div style={{ fontSize: 12, color: PAL.red, marginBottom: 10 }}>⚠️ {result.error}</div>}
+        {isOwn && (
+          <div style={{ fontSize: 11, color: PAL.textD, marginBottom: 10 }}>💡 Своих юнитов на карте можно просто перетаскивать пальцем/мышью на соседние клетки.</div>
+        )}
+        {isOwn && idle.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Резерв — поставить сюда (📍):</div>
+            <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6 }}>
+              {idle.map(u => (
+                <div key={u.uid} style={{ position: "relative" }}>
+                  <UnitChip u={u} />
+                  <button onClick={() => onPlace(u.uid)} style={{ position: "absolute", right: 2, top: 2, width: 26, height: 26, borderRadius: 8, border: "none", background: "#087f3f", color: "#fff", fontWeight: 800, cursor: "pointer" }}>📍</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {isOwn && !building && slots.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Построить ({profile.coins} 🪙):</div>
+            {slots.map(b => (
+              <Btn key={b} disabled={profile.coins < BUILDINGS_UI[b].cost || busy} onClick={() => onBuild(b)} style={{ marginBottom: 6 }}>
+                {BUILDINGS_UI[b].i} {BUILDINGS_UI[b].n} — {BUILDINGS_UI[b].cost} 🪙
+                <div style={{ fontSize: 10, fontWeight: 500, opacity: .8 }}>{BUILDINGS_UI[b].d}</div>
+              </Btn>
             ))}
           </div>
+        )}
+        {!isOwn && !ti.impassable && (
+          <>
+            {!canInteract && <div style={{ fontSize: 12, color: PAL.muted, marginBottom: 8 }}>Можно атаковать только соседние со своими клетки (или перетащи юнита на клетку).</div>}
+            {canInteract && freePlace && <div style={{ fontSize: 12, color: PAL.gold, marginBottom: 8 }}>🎁 Первая клетка — куда угодно!</div>}
+            {canInteract && (
+              <>
+                <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Юнит в атаку (⚡−1):</div>
+                <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, marginBottom: 8 }}>
+                  {usable.length === 0 && <div style={{ fontSize: 12, color: PAL.muted }}>Нет юнитов — открой кейс 📦</div>}
+                  {usable.map(u => <UnitChip key={u.uid} u={u} sel={selUnit === u.uid} onClick={() => setSelUnit(u.uid)} />)}
+                </div>
+                <Btn variant="success" disabled={busy || !selUnit || usable.length === 0 || profile.supplies < 1} onClick={() => onAttack(selUnit)}>
+                  {busy ? "Атака…" : "🏳️ Захватить (⚡1)"}
+                </Btn>
+                {profile.supplies < 1 && <div style={{ fontSize: 11, color: PAL.gold, marginTop: 6 }}>Припасы кончились — жди восстановления</div>}
+              </>
+            )}
+          </>
+        )}
+        <Btn variant="ghost" onClick={onClose} style={{ marginTop: 8 }}>Закрыть</Btn>
+      </div>
+    </div>
+  );
+}
+function InventoryModal({ profile, onClose }) {
+  return (
+    <Modal title="🎒 Инвентарь" onClose={onClose}>
+      {profile.units.length === 0 && <div style={{ color: PAL.muted, fontSize: 13 }}>Пусто. Открой кейс сервера 📦</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(96px,1fr))", gap: 10 }}>
+        {profile.units.map(u => (
+          <div key={u.uid} style={{ background: PAL.bg, borderRadius: 12, padding: 8, textAlign: "center", border: "1px solid " + PAL.border }}>
+            <img src={unitImg(u)} onError={e => e.target.style.display = "none"} style={{ width: "100%", aspectRatio: "1", borderRadius: 8, objectFit: "cover" }} />
+            <div style={{ fontSize: 11, fontWeight: 800, marginTop: 4 }}>{u.name}</div>
+            <div style={{ fontSize: 9, color: PAL.muted }}>{u.server}</div>
+            <div style={{ fontSize: 10, marginTop: 2 }}>🌪️{u.air} ⛏️{u.ground}/10 🛡️{u.protection}/10</div>
+            <div style={{ fontSize: 10, color: u.hp > 0 ? "#7fd18a" : PAL.red }}>{u.hp > 0 ? `HP ${u.hp}` : "ранен"}</div>
+            <div style={{ fontSize: 9, color: PAL.textD, marginTop: 2 }}>{u.pos ? "🗺️ на карте" : "💤 в резерве"}</div>
+          </div>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+function CaseModal({ servers, caseCost, coins, onOpen, onClose }) {
+  const [srv, setSrv] = useState(null);
+  const [phase, setPhase] = useState("idle");
+  const [res, setRes] = useState(null), [err, setErr] = useState("");
+  const cur = srv || servers[0]?.name;
+  const open = async () => {
+    setPhase("rolling"); setErr(""); setRes(null);
+    try {
+      const d = await onOpen(cur);
+      setTimeout(() => { setRes(d); setPhase("done"); }, 900);
+    } catch (e) { setErr(e.message); setPhase("idle"); }
+  };
+  return (
+    <Modal title="📦 Кейсы серверов" onClose={onClose}>
+      <style>{`@keyframes caseShake{0%,100%{transform:rotate(0)}20%{transform:rotate(-7deg)}40%{transform:rotate(7deg)}60%{transform:rotate(-5deg)}80%{transform:rotate(5deg)}}@keyframes cardPop{0%{transform:scale(.3) rotateY(90deg);opacity:0}60%{transform:scale(1.12) rotateY(0deg);opacity:1}100%{transform:scale(1)}}`}</style>
+      {servers.length === 0 && <div style={{ color: PAL.muted, fontSize: 13, marginBottom: 10 }}>На сервере пока нет папок с карточками.</div>}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {servers.map(s => (
+          <button key={s.name} onClick={() => setSrv(s.name)} style={{ padding: "6px 12px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "1px solid " + (cur === s.name ? PAL.accent : PAL.border), background: cur === s.name ? "#2a1d4d" : "transparent", color: PAL.text }}>
+            {pretty(s.name)} · {s.count} 👤
+          </button>
+        ))}
+      </div>
+      {phase === "rolling" && (
+        <div style={{ textAlign: "center", padding: 18, background: PAL.bg, borderRadius: 14, border: "1px solid " + PAL.gold, marginBottom: 10 }}>
+          <div style={{ fontSize: 46, display: "inline-block", animation: "caseShake .5s ease infinite" }}>📦</div>
+          <div style={{ fontSize: 12, color: PAL.gold, marginTop: 6 }}>Открываем…</div>
         </div>
       )}
-      {isOwn && !building && slots.length > 0 && (
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Построить ({profile.coins} 🪙):</div>
-          {slots.map(b => (
-            <Btn key={b} disabled={profile.coins < BUILDINGS_UI[b].cost || busy} onClick={() => onBuild(b)} style={{ marginBottom: 6 }}>
-              {BUILDINGS_UI[b].i} {BUILDINGS_UI[b].n} — {BUILDINGS_UI[b].cost} 🪙
-              <div style={{ fontSize: 10, fontWeight: 500, opacity: .8 }}>{BUILDINGS_UI[b].d}</div>
-            </Btn>
-          ))}
+      {phase === "done" && res && (
+        <div style={{ textAlign: "center", padding: 14, background: PAL.bg, borderRadius: 14, border: "1px solid " + PAL.accent, marginBottom: 10, animation: "cardPop .45s ease" }}>
+          <img src={unitImg(res.unit)} onError={e => e.target.style.display = "none"} style={{ width: 90, height: 90, borderRadius: 12, objectFit: "cover" }} />
+          <div style={{ fontSize: 16, fontWeight: 900, marginTop: 6 }}>✨ {res.unit.name}</div>
+          <div style={{ fontSize: 11, color: PAL.textD }}>🌪️ {res.unit.air} · ⛏️ {res.unit.ground}/10 · 🛡️ {res.unit.protection}/10</div>
         </div>
       )}
-      {!isOwn && !ti.impassable && (
-        <>
-          {!canInteract && <div style={{ fontSize: 12, color: PAL.muted, marginBottom: 8 }}>Можно атаковать только соседние со своими клетки.</div>}
-          {canInteract && freePlace && <div style={{ fontSize: 12, color: PAL.gold, marginBottom: 8 }}>🎁 Первая клетка — куда угодно!</div>}
-          {canInteract && (
-            <>
-              <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Юнит в атаку (⚡−1):</div>
-              <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, marginBottom: 8 }}>
-                {profile.units.length === 0 && <div style={{ fontSize: 12, color: PAL.muted }}>Нет юнитов — открой кейс в «Мир»</div>}
-                {usable.map(u => <UnitChip key={u.uid} u={u} sel={selUnit === u.uid} onClick={() => setSelUnit(u.uid)} />)}
-              </div>
-              <Btn variant="success" disabled={busy || !selUnit || usable.length === 0 || profile.supplies < 1} onClick={() => onAttack(selUnit)}>
-                {busy ? "Атака…" : "🏳️ Захватить (⚡1)"}
-              </Btn>
-              {profile.supplies < 1 && <div style={{ fontSize: 11, color: PAL.gold, marginTop: 6 }}>Припасы кончились — жди восстановления</div>}
-            </>
-          )}
-        </>
-      )}
+      {err && <div style={{ color: PAL.red, fontSize: 12, marginBottom: 8 }}>⚠️ {err}</div>}
+      <Btn disabled={phase === "rolling" || !cur || coins < caseCost} onClick={() => { playClick(); open(); }}>
+        {phase === "rolling" ? "Открываем…" : `Открыть кейс «${pretty(cur)}» — ${caseCost} 🪙`}
+      </Btn>
     </Modal>
   );
 }
 
-// ===== раздел «Мир»: кейсы-рулетка, инвентарь, топы =====
-function MenuScreen({ profile, servers, pools, caseCost, onSync }) {
-  const [sub, setSub] = useState("cases");
-  const [srv, setSrv] = useState(null);
-  const [phase, setPhase] = useState("idle");
-  const [win, setWin] = useState(null);
-  const [err, setErr] = useState("");
-  const [tops, setTops] = useState(null);
-  const [tab, setTab] = useState("power");
-  const cur = srv || servers[0]?.name;
-  const pool = pools?.[cur] || [];
-
-  const open = async () => {
-    setErr(""); setWin(null); setPhase("rolling");
-    try {
-      const d = await api.openCase(cur);
-      setWin(d.unit); onSync(d.profile);
-    } catch (e) { setErr(e.message); setPhase("idle"); }
+function SettingsModal({ onClose }) {
+  const [v, setV] = useState(getVolumes());
+  const upd = (k, val) => {
+    const nv = { ...v, [k]: val };
+    setV(nv); setVolumes(nv);
   };
-  useEffect(() => {
-    if (sub === "tops" && !tops) api.tops().then(setT).catch(() => setTops({ coins: [], cards: [], power: [] }));
-    function setT(d) { setTops(d); }
-  }, [sub]);
-
-  return (
-    <div style={{ position: "fixed", inset: 0, background: PAL.bg, color: PAL.text, overflowY: "auto", padding: "56px 14px 90px", fontFamily: "-apple-system,system-ui,sans-serif" }}>
-      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-        {[["cases", "📦 Кейсы"], ["inv", "🎒 Инвентарь"], ["tops", "🏆 Топы"]].map(([k, n]) => (
-          <button key={k} onClick={() => setSub(k)} style={{ padding: "8px 14px", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "1px solid " + (sub === k ? PAL.accent : PAL.border), background: sub === k ? "#2a1d4d" : "transparent", color: PAL.text }}>{n}</button>
-        ))}
-      </div>
-
-      {sub === "cases" && (
-        <>
-          <div style={{ fontSize: 13, color: PAL.textD, marginBottom: 10 }}>🪙 {profile.coins} · открытие {caseCost} 🪙</div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-            {servers.map(s => (
-              <button key={s.name} onClick={() => setSrv(s.name)} style={{ padding: "6px 12px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "1px solid " + (cur === s.name ? PAL.accent : PAL.border), background: cur === s.name ? "#2a1d4d" : "transparent", color: PAL.text }}>
-                {pretty(s.name)} · {s.count} 👤
-              </button>
-            ))}
-          </div>
-          {(phase === "rolling" || phase === "done") && win && (
-            <Roulette pool={pool} winner={win} onDone={() => setPhase("done")} />
-          )}
-          {phase === "done" && win && (
-            <div style={{ textAlign: "center", padding: 14, background: PAL.surf, borderRadius: 14, border: "1px solid " + PAL.accent, marginBottom: 12 }}>
-              <img src={unitImg(win)} onError={e => e.target.style.display = "none"} style={{ width: 96, height: 96, borderRadius: 12, objectFit: "cover" }} />
-              <div style={{ fontSize: 17, fontWeight: 900, marginTop: 6 }}>✨ {win.name}</div>
-              <div style={{ fontSize: 12, color: PAL.textD }}>🌪️ {win.air} · ⛏️ {win.ground}/10 · 🛡️ {win.protection}/10</div>
-            </div>
-          )}
-          {err && <div style={{ color: PAL.red, fontSize: 12, marginBottom: 8 }}>⚠️ {err}</div>}
-          <Btn disabled={phase === "rolling" || !cur || profile.coins < caseCost} onClick={open}>
-            {phase === "rolling" ? "Крутим…" : `Открыть кейс «${pretty(cur)}» — ${caseCost} 🪙`}
-          </Btn>
-        </>
-      )}
-
-      {sub === "inv" && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(100px,1fr))", gap: 10 }}>
-          {profile.units.length === 0 && <div style={{ color: PAL.muted, fontSize: 13 }}>Пусто.</div>}
-          {profile.units.map(u => (
-            <div key={u.uid} style={{ background: PAL.surf, borderRadius: 12, padding: 8, textAlign: "center", border: "1px solid " + PAL.border }}>
-              <img src={unitImg(u)} onError={e => e.target.style.display = "none"} style={{ width: "100%", aspectRatio: "1", borderRadius: 8, objectFit: "cover" }} />
-              <div style={{ fontSize: 11, fontWeight: 800, marginTop: 4 }}>{u.name}</div>
-              <div style={{ fontSize: 9, color: PAL.muted }}>{u.server}</div>
-              <div style={{ fontSize: 10, marginTop: 2 }}>🌪️{u.air} ⛏️{u.ground}/10 🛡️{u.protection}/10</div>
-              <div style={{ fontSize: 10, color: u.hp > 0 ? "#7fd18a" : PAL.red }}>{u.hp > 0 ? `HP ${u.hp}` : "ранен"}</div>
-              <div style={{ fontSize: 9, color: PAL.textD, marginTop: 2 }}>{u.pos ? "🗺️ на карте" : "💤 в резерве"}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {sub === "tops" && (
-        <>
-          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-            {[["power", "🏰 Сила"], ["coins", "🪙 Монеты"], ["cards", "🃏 Карты"]].map(([k, n]) => (
-              <button key={k} onClick={() => setTab(k)} style={{ padding: "6px 12px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "1px solid " + (tab === k ? PAL.accent : PAL.border), background: tab === k ? "#2a1d4d" : "transparent", color: PAL.text }}>{n}</button>
-            ))}
-          </div>
-          {!tops && <div style={{ color: PAL.muted }}>Загрузка…</div>}
-          {tops && (tops[tab] || []).map((row, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 10px", borderRadius: 9, background: i % 2 ? "transparent" : PAL.surf, border: "1px solid " + PAL.border, marginBottom: 4, fontSize: 13 }}>
-              <span style={{ fontWeight: 700 }}>{i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`} {row.n}</span>
-              <span style={{ color: PAL.gold, fontWeight: 800 }}>{row.v}</span>
-            </div>
-          ))}
-        </>
-      )}
+  const Row = ({ name, k }) => (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 4 }}>{name}: {Math.round(v[k] * 100)}%</div>
+      <input type="range" min="0" max="100" value={Math.round(v[k] * 100)}
+        onChange={e => upd(k, Number(e.target.value) / 100)}
+        onPointerUp={() => playClick()}
+        style={{ width: "100%" }} />
     </div>
+  );
+  return (
+    <Modal title="⚙️ Настройки звука" onClose={onClose}>
+      <Row name="🔊 Общая громкость" k="master" />
+      <Row name="🖱️ Звуки интерфейса (click)" k="ui" />
+      <Row name="🌍 Звуки биомов (лес/горы/море)" k="amb" />
+      <div style={{ fontSize: 11, color: PAL.textD }}>Настройки сохраняются на устройстве.</div>
+    </Modal>
   );
 }
 
@@ -1059,7 +1147,6 @@ function BootScreen({ progress, text }) {
 const MOCK_PROFILE = { id: "dev", name: "Dev", coins: 1000, supplies: 12, supplyMax: 12, supplyNextIn: 0, income: 0, heal: 0, units: [{ uid: "u1", name: "Тест", server: "dev", file: "test.png", air: 5, ground: 6, protection: 4, hp: 100, pos: null }], owned: [], buildings: {} };
 
 export default function App() {
-  const [tab, setTab] = useState("map"); // «Карта» | «Мир»
   const [territories, setTerritories] = useState(null);
   const [load, setLoad] = useState(0);
   const [gameReady, setGameReady] = useState(false), [visibleLoad, setVisibleLoad] = useState(60);
@@ -1068,13 +1155,13 @@ export default function App() {
   const [rev, setRev] = useState(0);
   const [profile, setProfile] = useState(null);
   const [overlay, setOverlay] = useState({ owners: {}, buildings: {}, units: [] });
-  const [servers, setServers] = useState([]), [pools, setPools] = useState({}), [caseCost, setCaseCost] = useState(120);
+  const [servers, setServers] = useState([]), [caseCost, setCaseCost] = useState(120);
   const [supplyEta, setSupplyEta] = useState(0);
   const [selUnit, setSelUnit] = useState(null);
+  const [screen, setScreen] = useState(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [note, setNote] = useState("");
-  const [moveMode, setMoveMode] = useState(null);
   const controlsRef = useRef(null);
   const flash = msg => { setNote(msg); setTimeout(() => setNote(""), 2600); };
 
@@ -1086,11 +1173,12 @@ export default function App() {
 
   const syncProfile = p => { setProfile(p); setSupplyEta(Date.now() + (p.supplyNextIn || 0) * 1000); };
   const setOv = d => setOverlay({ owners: d.owners || {}, buildings: d.buildings || {}, units: d.units || [] });
+  const refreshState = () => api.state().then(d => { syncProfile(d.profile); setOv(d); }).catch(() => {});
 
   useEffect(() => {
     api.init().then(d => {
       syncProfile(d.profile); setOv(d);
-      setServers(d.servers); setPools(d.pools || {}); setCaseCost(d.caseCost || 120);
+      setServers(d.servers); setCaseCost(d.caseCost || 120);
       const first = d.profile.units.find(u => u.hp > 0);
       if (first) setSelUnit(first.uid);
     }).catch(e => { console.warn("Сервер недоступен:", e.message); syncProfile(MOCK_PROFILE); });
@@ -1104,11 +1192,22 @@ export default function App() {
 
   useEffect(() => {
     if (!profile) return;
-    const id = setInterval(() => { api.state().then(d => { syncProfile(d.profile); setOv(d); }).catch(() => {}); }, 20000);
+    const id = setInterval(refreshState, 20000);
     return () => clearInterval(id);
   }, [!!profile]);
 
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(id); }, []);
+
+  useEffect(() => {
+    const start = () => {
+      startAmbience();
+      window.removeEventListener("pointerdown", start);
+      window.removeEventListener("keydown", start);
+    };
+    window.addEventListener("pointerdown", start);
+    window.addEventListener("keydown", start);
+    return () => { window.removeEventListener("pointerdown", start); window.removeEventListener("keydown", start); };
+  }, []);
 
   const reachable = useMemo(() => territories ? getReachable(territories) : new Set(), [territories, rev]);
 
@@ -1128,17 +1227,39 @@ export default function App() {
     return out;
   }, [territories, rev]);
 
-  const houses = useMemo(() => {
-    if (!territories) return [];
-    const out = [];
+  // поселения по биому
+  const settlements = useMemo(() => {
+    if (!territories) return null;
+    const S = { houses: [], roofs: [], barns: [], barnRoofs: [], crops: [], logs: [], stumps: [], rocks: [] };
     for (const t of territories) {
       if (!t.owner || t.type === "water") continue;
-      const p = toXZ(t.col, t.row);
-      out.push({ x: p.x + (hash2(t.row, t.col, 660) % 1000 / 1000 - 0.5) * 1.2, z: p.z + (hash2(t.row, t.col, 661) % 1000 / 1000 - 0.5) * 1.2, y: tileTop(t), mine: t.owner === "me", owner: t.owner });
+      const p = toXZ(t.col, t.row), y = tileTop(t);
+      const h1 = (hash2(t.row, t.col, 660) % 1000 / 1000 - 0.5) * 0.8;
+      const h2 = (hash2(t.row, t.col, 661) % 1000 / 1000 - 0.5) * 0.8;
+      const rot = Math.floor(hash2(t.row, t.col, 662) % 4) * Math.PI / 2;
+      const col = t.owner === "me" ? 0xffd75e : hueHex(t.owner);
+      const cxo = Math.cos(rot), czo = Math.sin(rot);
+      if (t.type === "field") {
+        S.barns.push([p.x + h1 * 0.5 + cxo * 0.7, y, p.z + h2 * 0.5 + czo * 0.7, rot]);
+        S.barnRoofs.push([p.x + h1 * 0.5 + cxo * 0.7, y, p.z + h2 * 0.5 + czo * 0.7, rot, col]);
+        for (let i = -1; i <= 1; i++) S.crops.push([p.x - cxo * 0.7 + (-czo) * i * 0.45, y, p.z - czo * 0.7 + cxo * i * 0.45, rot]);
+      } else if (t.type === "hills") {
+        S.houses.push([p.x + h1 * 0.6, y, p.z + h2 * 0.6, rot]);
+        S.roofs.push([p.x + h1 * 0.6, y, p.z + h2 * 0.6, rot, col]);
+        S.rocks.push([p.x - 0.8, y, p.z + 0.5]); S.rocks.push([p.x + 0.7, y, p.z - 0.7]);
+      } else if (t.type === "forest") {
+        S.stumps.push([p.x + h1, y, p.z + h2]);
+        S.logs.push([p.x - 0.6, y, p.z + 0.4, rot]);
+        S.logs.push([p.x - 0.6, y + 0.16, p.z + 0.4, rot + 0.4]);
+      } else {
+        S.houses.push([p.x + h1, y, p.z + h2, rot]);
+        S.roofs.push([p.x + h1, y, p.z + h2, rot, col]);
+      }
     }
-    return out;
+    return S;
   }, [territories, rev]);
 
+  // пины юнитов
   const pins = useMemo(() => {
     if (!territories) return [];
     const out = [];
@@ -1148,54 +1269,40 @@ export default function App() {
       const t = territories[r * COLS + c];
       if (!t) continue;
       const p = toXZ(t.col, t.row);
-      out.push({ x: p.x, z: p.z, y: tileTop(t), mine: u.own === "me", owner: u.own, url: u.file ? `/files/${encodeURIComponent(u.server)}/${encodeURIComponent(u.file)}` : null });
+      out.push({ uid: u.uid, pos: u.tileId, x: p.x, z: p.z, y: tileTop(t), mine: u.own === "me", owner: u.own, url: u.file ? `/files/${encodeURIComponent(u.server)}/${encodeURIComponent(u.file)}` : null });
     }
     return out;
   }, [territories, overlay, rev]);
-
-  const moveTargets = useMemo(() => {
-    if (!moveMode || !territories) return new Set();
-    const [r, c] = moveMode.from.split("_").map(Number);
-    const s = new Set();
-    for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-      const r2 = r + dr, c2 = c + dc;
-      if (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS) continue;
-      const t = territories[r2 * COLS + c2];
-      if (t && t.owner === "me") s.add(t.id);
-    }
-    return s;
-  }, [moveMode, territories, rev]);
 
   const reachList = useMemo(() => {
     if (!territories) return [];
     const out = [];
     for (const t of territories) {
-      const hit = moveMode ? moveTargets.has(t.id) : reachable.has(t.id);
-      if (!hit) continue;
+      if (!reachable.has(t.id)) continue;
       const p = toXZ(t.col, t.row);
       out.push({ x: p.x, z: p.z, y: tileTop(t) + 0.05 });
     }
     return out;
-  }, [territories, reachable, rev, moveMode, moveTargets]);
+  }, [territories, reachable, rev]);
 
   const freePlace = !!profile && profile.owned.length === 0;
 
   const doAttack = async unitId => {
     if (!selected || busy) return;
+    playClick();
     setBusy(true); setResult(null);
     try {
       const d = await api.attack(selected.id, unitId);
       setResult(d.result); syncProfile(d.profile);
-      const t = territories.find(x => x.id === selected.id);
-      if (d.owners[selected.id] === "me" && t) t.owner = "me";
-      setRev(r => r + 1);
-      setSelected(t ? { ...t } : null);
       if (d.result.win) flash("🏆 Захвачено! Юнит встал на клетку");
+      refreshState();
+      setSelected(null);
     } catch (e) { setResult({ error: e.message }); }
     setBusy(false);
   };
   const doBuild = async b => {
     if (!selected || busy) return;
+    playBuild();
     setBusy(true);
     try {
       const d = await api.build(selected.id, b);
@@ -1205,13 +1312,25 @@ export default function App() {
     } catch (e) { setResult({ error: e.message }); }
     setBusy(false);
   };
-  const doPlace = async (uid, tileId) => {
-    try { const d = await api.place(uid, tileId); syncProfile(d.profile); flash("📍 Юнит размещён на карте"); }
-    catch (e) { flash("⚠️ " + e.message); }
+  const doPlace = async uid => {
+    if (!selected) return;
+    try {
+      const d = await api.place(uid, selected.id);
+      syncProfile(d.profile);
+      flash("📍 Юнит размещён на карте");
+      refreshState();
+      setSelected(null);
+    } catch (e) { flash("⚠️ " + e.message); }
   };
-  const doMove = async (uid, tileId) => {
-    try { const d = await api.move(uid, tileId); syncProfile(d.profile); flash("➡️ Юнит перешёл (⚡−1)"); }
-    catch (e) { flash("⚠️ " + e.message); }
+  const onDrop = async (unitId, tileId, kind) => {
+    try {
+      const d = kind === "move" ? await api.move(unitId, tileId) : await api.attack(tileId, unitId);
+      if (d.profile) syncProfile(d.profile);
+      if (kind === "move") flash("➡️ Юнит перешёл (⚡−1)");
+      else if (d.result?.win) flash("🏆 Захвачено!");
+      else if (d.result) flash("💀 Неудача");
+      refreshState();
+    } catch (e) { flash("⚠️ " + e.message); refreshState(); }
   };
 
   if (!territories) return <BootScreen progress={load} text={load < 55 ? "Создаём карту…" : "Возводим горные хребты…"} />;
@@ -1223,61 +1342,39 @@ export default function App() {
     if (t) { const p = toXZ(t.col, t.row); controlsRef.current?.focus(p.x, p.z); }
     else controlsRef.current?.resetView();
   };
-  const handleSelect = t => {
-    if (moveMode) {
-      if (moveTargets.has(t.id)) doMove(moveMode.unitId, t.id);
-      else flash("❌ Только соседняя своя клетка");
-      setMoveMode(null);
-      return;
-    }
-    setSelected(t); setResult(null);
-  };
 
   return (
     <div style={{ position: "fixed", inset: 0, background: PAL.bg, color: PAL.text, fontFamily: "-apple-system,system-ui,sans-serif", overflow: "hidden" }}>
-      {tab === "map" ? (
-        <>
-          <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev}
-            borders={borders} reach={reachList} pins={pins} houses={houses}
-            onProgress={setVisibleLoad} onReady={() => { setVisibleLoad(100); setGameReady(true); }}
-            onSelect={handleSelect} controlsRef={controlsRef} />
-          {!gameReady && <BootScreen progress={visibleLoad} text="Подготавливаем видимую область…" />}
-          {profile && <Hud profile={profile} supplyEta={supplyEta} now={now} />}
-          <div style={{ position: "absolute", right: 12, bottom: 64, display: "flex", flexDirection: "column", gap: 8 }}>
-            <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1.35)}>＋</ZoomBtn>
-            <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1 / 1.35)}>－</ZoomBtn>
-            <ZoomBtn onClick={goHome}>⌂</ZoomBtn>
-          </div>
-          {selected && profile && !moveMode && (
-            <TerritoryModal t={selected} building={overlay.buildings[selected.id]} profile={profile}
-              selUnit={selUnit} setSelUnit={setSelUnit} onAttack={doAttack} onBuild={doBuild} busy={busy}
-              onClose={() => { setSelected(null); setResult(null); }}
-              result={result} canInteract={canInteractNow} freePlace={freePlace}
-              stationed={profile.units.filter(u => u.pos === selected.id)}
-              idle={profile.units.filter(u => !u.pos)}
-              onPlace={uid => doPlace(uid, selected.id)}
-              onMoveStart={uid => { setMoveMode({ unitId: uid, from: selected.id }); setSelected(null); }} />
-          )}
-        </>
-      ) : (
-        profile && <MenuScreen profile={profile} servers={servers} pools={pools} caseCost={caseCost} onSync={syncProfile} />
-      )}
-
+      <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev}
+        borders={borders} reach={reachList} pins={pins} settlements={settlements} onDrop={onDrop}
+        onProgress={setVisibleLoad} onReady={() => { setVisibleLoad(100); setGameReady(true); }}
+        onSelect={t => { playClick(); setSelected(t); setResult(null); }} controlsRef={controlsRef} />
+      {!gameReady && <BootScreen progress={visibleLoad} text="Подготавливаем видимую область…" />}
+      {profile && <Hud profile={profile} supplyEta={supplyEta} now={now}
+        onInv={() => { playClick(); setScreen("inv"); }}
+        onCase={() => { playClick(); setScreen("case"); }}
+        onSettings={() => { playClick(); setScreen("settings"); }} />}
       {note && (
         <div style={{ position: "absolute", top: 56, left: "50%", transform: "translateX(-50%)", background: "rgba(8,16,16,.92)", border: "1px solid " + PAL.border, borderRadius: 10, padding: "6px 14px", fontSize: 12, zIndex: 60, pointerEvents: "none", whiteSpace: "nowrap" }}>{note}</div>
       )}
-      {moveMode && tab === "map" && (
-        <div style={{ position: "absolute", top: 92, left: "50%", transform: "translateX(-50%)", background: "rgba(42,29,77,.95)", border: "1px solid " + PAL.accent, borderRadius: 10, padding: "6px 14px", fontSize: 12, zIndex: 60, display: "flex", gap: 10, alignItems: "center" }}>
-          ➡️ Выбери соседнюю свою клетку (⚡1)
-          <button onClick={() => setMoveMode(null)} style={{ border: "none", background: PAL.red, color: "#fff", borderRadius: 7, padding: "2px 8px", fontWeight: 700, cursor: "pointer" }}>✕</button>
-        </div>
-      )}
-
-      {/* две плашки: Карта / Мир */}
-      <div style={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 8, zIndex: 65 }}>
-        <button onClick={() => setTab("map")} style={{ padding: "10px 22px", borderRadius: 14, fontSize: 14, fontWeight: 900, cursor: "pointer", border: "1px solid " + (tab === "map" ? PAL.gold : PAL.border), background: tab === "map" ? "rgba(245,196,81,.18)" : "rgba(8,16,16,.9)", color: PAL.text, backdropFilter: "blur(4px)" }}>🗺️ Карта</button>
-        <button onClick={() => setTab("menu")} style={{ padding: "10px 22px", borderRadius: 14, fontSize: 14, fontWeight: 900, cursor: "pointer", border: "1px solid " + (tab === "menu" ? PAL.accent : PAL.border), background: tab === "menu" ? "rgba(139,92,246,.22)" : "rgba(8,16,16,.9)", color: PAL.text, backdropFilter: "blur(4px)" }}>🎒 Мир</button>
+      <div style={{ position: "absolute", right: 12, bottom: 34, display: "flex", flexDirection: "column", gap: 8 }}>
+        <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1.35)}>＋</ZoomBtn>
+        <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1 / 1.35)}>－</ZoomBtn>
+        <ZoomBtn onClick={goHome}>⌂</ZoomBtn>
       </div>
+      {selected && profile && (
+        <TerritoryModal t={selected} building={overlay.buildings[selected.id]} profile={profile}
+          selUnit={selUnit} setSelUnit={setSelUnit} onAttack={doAttack} onBuild={doBuild} busy={busy}
+          onClose={() => { setSelected(null); setResult(null); }}
+          result={result} canInteract={canInteractNow} freePlace={freePlace}
+          idle={profile.units.filter(u => !u.pos)} onPlace={doPlace} />
+      )}
+      {screen === "inv" && profile && <InventoryModal profile={profile} onClose={() => setScreen(null)} />}
+      {screen === "settings" && <SettingsModal onClose={() => setScreen(null)} />}
+      {screen === "case" && profile && (
+        <CaseModal servers={servers} caseCost={caseCost} coins={profile.coins} onClose={() => setScreen(null)}
+          onOpen={async srv => { const d = await api.openCase(srv); syncProfile(d.profile); return d; }} />
+      )}
     </div>
   );
 }
