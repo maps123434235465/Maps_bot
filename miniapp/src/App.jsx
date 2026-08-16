@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { api, unitImg } from "./api";
 
 const COLS = 800, ROWS = 600;
-const MAX_OWN = 8;
+const MAX_OWN = 300;
 const PAL = {
   bg: "#071018", surf: "#0e1b16", border: "#2b4232", accent: "#8b5cf6", accentL: "#c4b5fd",
   red: "#ef4444", gold: "#f5c451", muted: "#6f8277", text: "#e6eee8", textD: "#a9b8ae"
@@ -26,7 +26,7 @@ const MCX = MAP_W / 2, MCZ = MAP_D / 2;
 const BASE_H = 0.16, TOP_THICK = 0.06, SURFACE_EPS = 0.035;
 
 const CHUNK_TILES = 24, FAR_TILES = 48;
-const MIN_D = 45, MAX_D = 1500, START_D = 240;   // дистанция камеры = зум
+const MIN_D = 45, MAX_D = 320, START_D = 240;   // дистанция камеры = зум
 const FOV = 50, TAN = Math.tan((FOV / 2) * Math.PI / 180);
 const PAN_MARGIN = 260;
 const FOG_COLOR = 0x0c1f27, FOG_NEAR = 220, FOG_FAR = 2100;
@@ -593,8 +593,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       r.dist += (r.distTarget - r.dist) * 0.15;
       updateCameraPose();
 
-      if (!r.farMode && r.dist > 520) { r.farMode = true; r.refreshChunks(); }
-      else if (r.farMode && r.dist < 430) { r.farMode = false; r.refreshChunks(); }
+      if (!r.farMode && r.dist > 280) { r.farMode = true; r.refreshChunks(); }
+      else if (r.farMode && r.dist < 240) { r.farMode = false; r.refreshChunks(); }
 
       if (Math.abs(r.dist - lastDist) > 0.5 ||
           Math.abs(r.targetX - lastX) > CHUNK_TILES * TILE * 0.2 ||
@@ -968,16 +968,24 @@ function InventoryModal({ profile, onClose }) {
 }
 function CaseModal({ servers, caseCost, coins, onOpen, onClose }) {
   const [srv, setSrv] = useState(null);
-  const [res, setRes] = useState(null), [busy, setBusy] = useState(false), [err, setErr] = useState("");
+  const [phase, setPhase] = useState("idle"); // idle | rolling | done
+  const [res, setRes] = useState(null), [err, setErr] = useState("");
   const cur = srv || servers[0]?.name;
   const pretty = n => n ? n.charAt(0).toUpperCase() + n.slice(1) : n;
   const open = async () => {
-    setBusy(true); setErr(""); setRes(null);
-    try { setRes(await onOpen(cur)); } catch (e) { setErr(e.message); }
-    setBusy(false);
+    setPhase("rolling"); setErr(""); setRes(null);
+    try {
+      const d = await onOpen(cur);
+      setTimeout(() => { setRes(d); setPhase("done"); }, 900);
+    } catch (e) { setErr(e.message); setPhase("idle"); }
   };
   return (
     <Modal title="📦 Кейсы серверов" onClose={onClose}>
+      <style>{`
+        @keyframes caseShake{0%,100%{transform:rotate(0)}20%{transform:rotate(-7deg)}40%{transform:rotate(7deg)}60%{transform:rotate(-5deg)}80%{transform:rotate(5deg)}}
+        @keyframes cardPop{0%{transform:scale(.3) rotateY(90deg);opacity:0}60%{transform:scale(1.12) rotateY(0deg);opacity:1}100%{transform:scale(1)}}
+      `}</style>
+      {servers.length === 0 && <div style={{ color: PAL.muted, fontSize: 13, marginBottom: 10 }}>На сервере пока нет папок с карточками.</div>}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
         {servers.map(s => (
           <button key={s.name} onClick={() => setSrv(s.name)} style={{ padding: "6px 12px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "1px solid " + (cur === s.name ? PAL.accent : PAL.border), background: cur === s.name ? "#2a1d4d" : "transparent", color: PAL.text }}>
@@ -985,15 +993,23 @@ function CaseModal({ servers, caseCost, coins, onOpen, onClose }) {
           </button>
         ))}
       </div>
-      {res && (
-        <div style={{ textAlign: "center", padding: 14, background: PAL.bg, borderRadius: 14, border: "1px solid " + PAL.accent, marginBottom: 10 }}>
+      {phase === "rolling" && (
+        <div style={{ textAlign: "center", padding: 18, background: PAL.bg, borderRadius: 14, border: "1px solid " + PAL.gold, marginBottom: 10 }}>
+          <div style={{ fontSize: 46, display: "inline-block", animation: "caseShake .5s ease infinite" }}>📦</div>
+          <div style={{ fontSize: 12, color: PAL.gold, marginTop: 6 }}>Открываем…</div>
+        </div>
+      )}
+      {phase === "done" && res && (
+        <div style={{ textAlign: "center", padding: 14, background: PAL.bg, borderRadius: 14, border: "1px solid " + PAL.accent, marginBottom: 10, animation: "cardPop .45s ease" }}>
           <img src={unitImg(res.unit)} onError={e => e.target.style.display = "none"} style={{ width: 90, height: 90, borderRadius: 12, objectFit: "cover" }} />
           <div style={{ fontSize: 16, fontWeight: 900, marginTop: 6 }}>✨ {res.unit.name}</div>
           <div style={{ fontSize: 11, color: PAL.textD }}>🌪️ {res.unit.air} · ⛏️ {res.unit.ground}/10 · 🛡️ {res.unit.protection}/10</div>
         </div>
       )}
       {err && <div style={{ color: PAL.red, fontSize: 12, marginBottom: 8 }}>⚠️ {err}</div>}
-      <Btn disabled={busy || !cur || coins < caseCost} onClick={open}>{busy ? "Открываем…" : `Открыть кейс «${pretty(cur)}» — ${caseCost} 🪙`}</Btn>
+      <Btn disabled={phase === "rolling" || !cur || coins < caseCost} onClick={open}>
+        {phase === "rolling" ? "Открываем…" : `Открыть кейс «${pretty(cur)}» — ${caseCost} 🪙`}
+      </Btn>
     </Modal>
   );
 }

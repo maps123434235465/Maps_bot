@@ -1,5 +1,6 @@
 const express = require("express");
 const crypto = require("crypto");
+const fs = require("fs");
 const path = require("path");
 const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
@@ -24,7 +25,7 @@ const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // ===== БАЛАНС =====
 const SUPPLY_MAX = 6, SUPPLY_REGEN_MS = 12 * 60 * 1000;
-const START_COINS = 300, MAX_OWN = 8, CASE_COST = 120;
+const START_COINS = 300, MAX_OWN = 300, CASE_COST = 120;
 const BUILDINGS = {
   barn:   { name: "Амбар",       cost: 140, terrain: ["field"],  income: 2, desc: "+2 койна/мин" },
   medbay: { name: "Медотсек",    cost: 160, terrain: ["field"],  heal: 8,   desc: "+8 HP юнитам/мин" },
@@ -50,17 +51,26 @@ async function loadProfile(id, user) {
   return p;
 }
 
-// ===== КАРТОЧКИ СЕРВЕРОВ =====
-let CARDS = {};
-async function loadCards() {
-  const { data, error } = await sb.from("cards").select("*");
-  if (error) { console.error("❌ Ошибка загрузки карточек:", error); return; }
-  CARDS = {};
-  for (const c of data) {
-    (CARDS[c.server] ||= []).push({ file: c.file, name: c.name, air: c.air, ground: c.ground, protection: c.protection });
+// ===== КАРТОЧКИ СЕРВЕРОВ (скан папок server/servers/<имя>/*.png) =====
+const SERVERS_DIR = path.join(__dirname, "servers");
+function scanServers() {
+  const out = {};
+  if (!fs.existsSync(SERVERS_DIR)) return out;
+  for (const dir of fs.readdirSync(SERVERS_DIR)) {
+    const full = path.join(SERVERS_DIR, dir);
+    if (!fs.statSync(full).isDirectory()) continue;
+    const cards = [];
+    for (const f of fs.readdirSync(full)) {
+      const m = f.match(/^(.+)-air(\d+)-ground(\d+)-protection(\d+)\.png$/i);
+      if (!m) continue;
+      cards.push({ file: f, name: m[1], air: +m[2], ground: +m[3], protection: +m[4] });
+    }
+    out[dir] = cards;
   }
-  for (const [s, cards] of Object.entries(CARDS)) console.log(`📦 Сервер "${s}": карточек — ${cards.length}`);
+  return out;
 }
+let CARDS = scanServers();
+for (const [s, cards] of Object.entries(CARDS)) console.log(`📦 Сервер "${s}": карточек — ${cards.length}`);
 loadCards();
 
 // ===== СОЗДАНИЕ ПРОФИЛЯ =====
@@ -283,8 +293,10 @@ if (BOT_TOKEN) {
     });
   });
   bot.onText(/\/rescan/, async msg => {
-    await loadCards();
-    bot.sendMessage(msg.chat.id, "✅ Карточки серверов пересканированы из Supabase.");
+    bot.onText(/\/rescan/, msg => {
+      CARDS = scanServers();
+      bot.sendMessage(msg.chat.id, "✅ Карточки серверов пересканированы.");
+    });
   });
   console.log("🤖 Бот запущен с поллингом");
 }
