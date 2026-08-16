@@ -31,7 +31,7 @@ const BUILDINGS = {
   fort:   { name: "Укрепления",  cost: 90,  terrain: ["meadow"], defense: 1.35, desc: "+35% защиты клетки" },
   mine:   { name: "Шахта",       cost: 200, terrain: ["hills"],  income: 4, desc: "+4 койна/мин" }
 };
-const TERRAIN_DEF = { meadow: 1, field: 1, forest: 1.22, swamp: 1.18, hills: 1.34, mountain: 1.6 };
+const TERRAIN_DEF = { meadow: 1, field: 1, forest: 1.22, swamp: 1.18, hills: 1.34, mountain: 1.6, water: 1 };
 
 // ===== ПРОФИЛИ =====
 const P = {};
@@ -217,10 +217,16 @@ app.post("/api/attack", auth, async (req, res) => {
   if (!unit) return res.json({ ok: false, error: "Выбери юнита" });
   if (unit.hp <= 0) return res.json({ ok: false, error: "Юнит ранен — вылечи его" });
   if (p.supplies < 1) return res.json({ ok: false, error: "Нет припасов ⚡" });
-  if (!type || type === "mountain") return res.json({ ok: false, error: "Нельзя атаковать горы" });
+  if (!type || type === "mountain" || type === "water") return res.json({ ok: false, error: "Нельзя атаковать эту клетку" });
   const defId = await ownerOf(tileId);
   if (defId === p.id) return res.json({ ok: false, error: "Уже ваша" });
   if (p.owned.length >= MAX_OWN) return res.json({ ok: false, error: `Максимум ${MAX_OWN} территорий` });
+
+  if (p.owned.length > 0) {
+  const [rr, cc] = tileId.split("_").map(Number);
+  const adj = [[rr-1,cc],[rr+1,cc],[rr,cc-1],[rr,cc+1]].some(([a,b]) => p.owned.includes(`${a}_${b}`));
+  if (!adj) return res.json({ ok: false, error: "Можно атаковать только соседние со своими клетки" });
+}
 
   const ov = await overlay(p.id);
   const defMult = (TERRAIN_DEF[type] || 1) * (ov.buildings[tileId]?.b === "fort" ? 1.35 : 1);

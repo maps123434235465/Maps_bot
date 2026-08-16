@@ -2,24 +2,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { api, unitImg } from "./api";
 
-// ================= КОНСТАНТЫ =================
 const COLS = 800, ROWS = 600;
 const MAX_OWN = 8;
-
 const PAL = {
   bg: "#071018", surf: "#0e1b16", border: "#2b4232", accent: "#8b5cf6", accentL: "#c4b5fd",
   red: "#ef4444", gold: "#f5c451", muted: "#6f8277", text: "#e6eee8", textD: "#a9b8ae"
 };
-
 const TYPES = {
   meadow:   { n: "Луг",          e: "🌿", bonus: null,      m: 1.00, impassable: false, top: 0x6fae4e, side: 0x47772f },
   forest:   { n: "Лес",          e: "🌲", bonus: "defense", m: 1.22, impassable: false, top: 0x55923d, side: 0x38622a },
   hills:    { n: "Холмы",        e: "⛰️", bonus: "defense", m: 1.34, impassable: false, captureMult: 0.88, top: 0x79a44b, side: 0x527034 },
   field:    { n: "Поля",         e: "🌾", bonus: null,      m: 1.00, impassable: false, top: 0xcdb94a, side: 0x93822e },
   swamp:    { n: "Болота",       e: "🪷", bonus: "air",     m: 1.18, impassable: false, captureMult: 0.92, top: 0x67935a, side: 0x44653b },
-  mountain: { n: "Высокие горы", e: "🏔️", bonus: "defense", m: 1.60, impassable: true,  top: 0x8d928a, side: 0x565c57 }
+  mountain: { n: "Высокие горы", e: "🏔️", bonus: "defense", m: 1.60, impassable: true,  top: 0x8d928a, side: 0x565c57 },
+  water:    { n: "Море",         e: "🌊", bonus: null,      m: 1.00, impassable: true,  top: 0x0e3d55, side: 0x0e3d55 }
 };
-
 const SNAME = { attack: "Атака", defense: "Защита", air: "Воздух" };
 const SICON = { attack: "⚔️", defense: "🛡️", air: "🌪️" };
 
@@ -29,10 +26,10 @@ const MCX = MAP_W / 2, MCZ = MAP_D / 2;
 const BASE_H = 0.16, TOP_THICK = 0.06, SURFACE_EPS = 0.035;
 
 const CHUNK_TILES = 24, FAR_TILES = 48;
-const DETAIL_FAR_ZOOM = 0.5, DETAIL_BACK_ZOOM = 0.62;
-const MIN_ZOOM = 0.16, MAX_ZOOM = 3.4;
-const PAN_MARGIN = 200;
-const FOG_COLOR = 0x0c1f27, FOG_NEAR = 240, FOG_FAR = 1900;
+const MIN_D = 45, MAX_D = 1500, START_D = 240;   // дистанция камеры = зум
+const FOV = 50, TAN = Math.tan((FOV / 2) * Math.PI / 180);
+const PAN_MARGIN = 260;
+const FOG_COLOR = 0x0c1f27, FOG_NEAR = 220, FOG_FAR = 2100;
 
 const BUILDINGS_UI = {
   barn:   { n: "Амбар",      i: "🏚️", cost: 140, d: "+2 🪙/мин" },
@@ -42,7 +39,6 @@ const BUILDINGS_UI = {
 };
 const BUILD_SLOTS = { field: ["barn", "medbay"], meadow: ["fort"], hills: ["mine"] };
 
-// ================= ХЕЛПЕРЫ =================
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const hash2 = (r, c, salt = 0) => {
   let x = (r * 374761393 + c * 668265263 + salt * 69069) | 0;
@@ -59,10 +55,16 @@ const vnoise = (r, c, scale, salt) => {
   return h(r0, c0) * (1 - sr) * (1 - sc) + h(r0 + 1, c0) * sr * (1 - sc)
        + h(r0, c0 + 1) * (1 - sr) * sc + h(r0 + 1, c0 + 1) * sr * sc;
 };
+const isLand = (row, col) => {
+  const nx = (col - COLS / 2) / (COLS / 2);
+  const nz = (row - ROWS / 2) / (ROWS / 2);
+  const d = Math.sqrt(nx * nx + nz * nz);
+  const n = (vnoise(row, col, 64, 777) - 0.5) * 0.55 + (vnoise(row, col, 23, 778) - 0.5) * 0.25;
+  return d + n < 0.92;
+};
 const tileTop = t => BASE_H + t.elev + TOP_THICK + SURFACE_EPS;
 const toXZ = (col, row) => ({ x: (col + 0.5) * TILE - MCX, z: (row + 0.5) * TILE - MCZ });
 
-// ================= ГЕНЕРАЦИЯ (детерминированная, = серверной) =================
 const baseType = (row, col) => {
   const a = h01(row, col, 10), b = h01(row, col, 22);
   if (a < 0.11) return "forest";
@@ -107,6 +109,8 @@ function paintMassInto(tiles, m) {
   for (let r = r0; r <= r1; r++) {
     const dr = r - m.sr;
     for (let c = c0; c <= c1; c++) {
+      const t = tiles[r * COLS + c];
+      if (t.type === "water") continue;
       const dc = c - m.sc;
       const u = dr * cosA - dc * sinA, v = dr * sinA + dc * cosA;
       const ang = Math.atan2(v, u);
@@ -116,7 +120,6 @@ function paintMassInto(tiles, m) {
       if (d2 >= 1) continue;
       const e = m.peak * Math.pow(1 - d2, 0.68) * (0.82 + 0.30 * vnoise(r, c, 7, salt));
       if (e <= 0.04) continue;
-      const t = tiles[r * COLS + c];
       if (e > t.elev) { t.elev = e; t.type = e >= 0.42 ? "mountain" : "hills"; }
     }
   }
@@ -129,11 +132,14 @@ async function genMapProgressive(onProgress = () => {}) {
     const end = Math.min(total, start + batch);
     for (let idx = start; idx < end; idx++) {
       const row = Math.floor(idx / COLS), col = idx % COLS;
+      if (!isLand(row, col)) {
+        tiles[idx] = { id: `${row}_${col}`, row, col, type: "water", owner: null, level: 1, elev: -0.5, shade: 1 };
+        continue;
+      }
       const type = baseType(row, col);
       tiles[idx] = {
         id: `${row}_${col}`, row, col, type, owner: null, level: 1,
-        elev: baseElev(type, row, col),
-        shade: 0.90 + h01(row, col, 303) * 0.16
+        elev: baseElev(type, row, col), shade: 0.90 + h01(row, col, 303) * 0.16
       };
     }
     onProgress(Math.round((end / total) * 55));
@@ -149,21 +155,13 @@ async function genMapProgressive(onProgress = () => {}) {
   return tiles;
 }
 
-// ================= ЛОГИКА =================
 const nbIds = (row, col) => [
   [row - 1, col], [row + 1, col], [row, col - 1], [row, col + 1]
 ].filter(([r, c]) => r >= 0 && r < ROWS && c >= 0 && c < COLS).map(([r, c]) => `${r}_${c}`);
 
 function getReachable(territories) {
   const mine = territories.filter(t => t.owner === "me" && !TYPES[t.type].impassable);
-  if (!mine.length) {
-    const cx = (COLS - 1) / 2, cy = (ROWS - 1) / 2;
-    const near = territories.filter(t =>
-      !t.owner && !TYPES[t.type].impassable &&
-      ((t.row - cy) * (t.row - cy) + (t.col - cx) * (t.col - cx)) < 42
-    );
-    return new Set(near.map(t => t.id));
-  }
+  if (!mine.length) return new Set(); // первая клетка — куда угодно (флаг freePlace)
   const adj = new Set();
   const byId = new Map(territories.map(t => [t.id, t]));
   mine.forEach(m => nbIds(m.row, m.col).forEach(id => {
@@ -172,7 +170,6 @@ function getReachable(territories) {
   }));
   return adj;
 }
-
 function applyOverlay(tiles, owners) {
   for (const t of tiles) if (t.owner) t.owner = null;
   for (const [id, who] of Object.entries(owners || {})) {
@@ -218,23 +215,20 @@ function needsSides(t, all) {
   }
   return false;
 }
-
 function createInstancedSet(scene, arr, detail, allTiles) {
   const buckets = {};
-  for (const t of arr) { (buckets[t.type] ||= []).push(t); }
+  for (const t of arr) { if (t.type === "water") continue; (buckets[t.type] ||= []).push(t); }
   const dummy = new THREE.Object3D();
   const byId = {};
   const groups = {};
   for (const [type, items] of Object.entries(buckets)) {
     const n = items.length;
     const top = new THREE.InstancedMesh(tileGeo, MATS[type], n);
-    top.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     top.frustumCulled = true;
     let side = null, sideIdx = new Map();
     if (detail) {
       const sideItems = items.filter(t => needsSides(t, allTiles));
       side = new THREE.InstancedMesh(sideGeo, MATS[type + "Side"], Math.max(1, sideItems.length));
-      side.instanceMatrix.setUsage(THREE.StaticDrawUsage);
       side.frustumCulled = true;
       for (let i = 0; i < sideItems.length; i++) {
         const t = sideItems[i], p = toXZ(t.col, t.row);
@@ -264,10 +258,10 @@ function createInstancedSet(scene, arr, detail, allTiles) {
   }
   return { groups, byId };
 }
-
 function createDecor(scene, arr) {
   const defs = { trees: [], rocks: [], smallRocks: [], fields: [], bushes: [], reeds: [], flowers: [], ridges: [], peaks: [], snows: [] };
   for (const t of arr) {
+    if (t.type === "water") continue;
     const s = hash2(t.row, t.col, 777) % 100;
     const p = toXZ(t.col, t.row);
     const top = tileTop(t);
@@ -348,9 +342,7 @@ function createDecor(scene, arr) {
     snow: make(decorGeo.peakSmall, MATS.snow, defs.snows, 1, 0)
   };
 }
-
 const chunkKey = (cr, cc, far) => far ? `F${cr}:${cc}` : `${cr}:${cc}`;
-
 function createWorldChunk(scene, tilesAll, cr, cc, far) {
   const ts = far ? FAR_TILES : CHUNK_TILES;
   const r0 = Math.max(0, cr * ts), r1 = Math.min(ROWS, (cr + 1) * ts);
@@ -363,7 +355,6 @@ function createWorldChunk(scene, tilesAll, cr, cc, far) {
   const decor = far ? null : createDecor(scene, arr);
   return { cr, cc, far, territories: arr, inst, decor };
 }
-
 function removeWorldChunk(scene, chunk) {
   for (const g of Object.values(chunk.inst.groups)) {
     scene.remove(g.top); g.top.dispose();
@@ -372,7 +363,6 @@ function removeWorldChunk(scene, chunk) {
   if (chunk.decor) for (const m of Object.values(chunk.decor))
     if (m) { scene.remove(m); m.dispose(); }
 }
-
 function applyInstanceColors(inst, territories, reachable, selectedId) {
   const color = new THREE.Color();
   for (let i = 0; i < territories.length; i++) {
@@ -389,9 +379,8 @@ function applyInstanceColors(inst, territories, reachable, selectedId) {
   for (const g of Object.values(inst.groups))
     if (g.top.instanceColor) g.top.instanceColor.needsUpdate = true;
 }
-
 function createAnimatedOcean() {
-  const geo = new THREE.PlaneGeometry(MAP_W + 5200, MAP_D + 5200, 140, 140);
+  const geo = new THREE.PlaneGeometry(MAP_W + 7000, MAP_D + 7000, 140, 140);
   const m = new THREE.ShaderMaterial({
     uniforms: {
       uTime: { value: 0 },
@@ -433,7 +422,7 @@ function createAnimatedOcean() {
   return mesh;
 }
 
-// ================= 3D-ЭКРАН =================
+// ================= 3D-ЭКРАН (перспективная камера) =================
 function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, onProgress, controlsRef, rev }) {
   const mountRef = useRef(null), R = useRef({});
   const dataRef = useRef({ territories, onSelect, selectedId, reachable, onReady, onProgress });
@@ -448,19 +437,18 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     scene.fog = new THREE.Fog(FOG_COLOR, FOG_NEAR, FOG_FAR);
     r.scene = scene;
 
-    const viewH = 56, aspect = W / Math.max(1, H);
-    const camera = new THREE.OrthographicCamera(-viewH * aspect / 2, viewH * aspect / 2, viewH / 2, -viewH / 2, 0.1, 3200);
+    const camera = new THREE.PerspectiveCamera(FOV, W / Math.max(1, H), 0.1, 4200);
     r.camera = camera;
     r.targetX = 0; r.targetZ = 0; r.panTargetX = 0; r.panTargetZ = 0;
-    r.zoomTarget = 0.9; camera.zoom = 0.9;
-    r.yaw = 0.32; r.pitch = 0.82; r.orbitDist = 104;
+    r.dist = START_D; r.distTarget = START_D;
+    r.yaw = 0.32; r.pitch = 0.82;
 
     const updateCameraPose = () => {
       const cp = Math.cos(r.pitch);
       camera.position.set(
-        r.targetX + Math.sin(r.yaw) * cp * r.orbitDist,
-        Math.sin(r.pitch) * r.orbitDist,
-        r.targetZ + Math.cos(r.yaw) * cp * r.orbitDist
+        r.targetX + Math.sin(r.yaw) * cp * r.dist,
+        Math.sin(r.pitch) * r.dist,
+        r.targetZ + Math.cos(r.yaw) * cp * r.dist
       );
       camera.lookAt(r.targetX, 0, r.targetZ);
     };
@@ -509,12 +497,9 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.mouse2D = new THREE.Vector2();
 
     r.updateProjection = () => {
-      const a = Math.max(2, mount.clientWidth) / Math.max(2, mount.clientHeight);
-      const hh = viewH / (2 * camera.zoom), hw = hh * a;
-      camera.left = -hw; camera.right = hw; camera.top = hh; camera.bottom = -hh;
+      camera.aspect = Math.max(2, mount.clientWidth) / Math.max(2, mount.clientHeight);
       camera.updateProjectionMatrix();
     };
-    r.updateProjection();
 
     const chunkCenter = key => {
       const far = key[0] === "F";
@@ -531,7 +516,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     const desiredChunkKeys = () => {
       const cw = Math.max(2, mount.clientWidth), ch = Math.max(2, mount.clientHeight);
       const a = cw / ch;
-      const hh = viewH / (2 * camera.zoom), hw = hh * a;
+      const hh = r.dist * TAN, hw = hh * a;
       if (!isFinite(hh) || !isFinite(hw) || hh <= 0 || hw <= 0) return r.chunkWanted;
       const ts = r.farMode ? FAR_TILES : CHUNK_TILES;
       const radius = Math.max(hw, hh) * 1.4 + ts * TILE;
@@ -600,21 +585,21 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
 
     r.refreshChunks();
 
-    let raf = 0, frames = 0, lastX = r.targetX, lastZ = r.targetZ, lastZoom = camera.zoom;
+    let raf = 0, frames = 0, lastX = r.targetX, lastZ = r.targetZ, lastDist = r.dist;
     const animate = () => {
       raf = requestAnimationFrame(animate);
       r.targetX += (r.panTargetX - r.targetX) * 0.18;
       r.targetZ += (r.panTargetZ - r.targetZ) * 0.18;
-      camera.zoom += (r.zoomTarget - camera.zoom) * 0.15;
+      r.dist += (r.distTarget - r.dist) * 0.15;
       updateCameraPose();
 
-      if (!r.farMode && camera.zoom < DETAIL_FAR_ZOOM) { r.farMode = true; r.refreshChunks(); }
-      else if (r.farMode && camera.zoom > DETAIL_BACK_ZOOM) { r.farMode = false; r.refreshChunks(); }
+      if (!r.farMode && r.dist > 520) { r.farMode = true; r.refreshChunks(); }
+      else if (r.farMode && r.dist < 430) { r.farMode = false; r.refreshChunks(); }
 
-      if (Math.abs(camera.zoom - lastZoom) > 0.002 ||
+      if (Math.abs(r.dist - lastDist) > 0.5 ||
           Math.abs(r.targetX - lastX) > CHUNK_TILES * TILE * 0.2 ||
           Math.abs(r.targetZ - lastZ) > CHUNK_TILES * TILE * 0.2) {
-        lastX = r.targetX; lastZ = r.targetZ; lastZoom = camera.zoom;
+        lastX = r.targetX; lastZ = r.targetZ; lastDist = r.dist;
         r.refreshChunks();
       }
       processChunkQueue();
@@ -626,8 +611,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
 
       frames++;
       if (frames % 30 === 0) {
-        const details = camera.zoom >= 0.86;
-        const sides = camera.zoom >= 0.62;
+        const details = r.dist < 170;
+        const sides = r.dist < 320;
         for (const chunk of r.chunks.values()) {
           if (!chunk.decor) continue;
           for (const m of Object.values(chunk.decor)) if (m) m.visible = details;
@@ -660,7 +645,6 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     };
   }, []);
 
-  // цвета + маркер выделения
   useEffect(() => {
     const r = R.current;
     if (!r.chunks) return;
@@ -674,32 +658,34 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     } else r.selection.visible = false;
   }, [territories, reachable, selectedId, rev]);
 
-  // управление + кнопки зума
+  // управление: панорама учитывает поворот камеры (не инвертируется)
   useEffect(() => {
     const mount = mountRef.current, r = R.current;
     if (!mount) return;
 
     const clampTarget = () => {
       const a = Math.max(2, mount.clientWidth) / Math.max(2, mount.clientHeight);
-      const hh = 56 / (2 * r.zoomTarget), hw = hh * a;
+      const hh = r.distTarget * TAN, hw = hh * a;
       const lx = Math.max(MAP_W / 2 + PAN_MARGIN - hw, 0);
       const lz = Math.max(MAP_D / 2 + PAN_MARGIN - hh, 0);
       r.panTargetX = clamp(r.panTargetX, -lx, lx);
       r.panTargetZ = clamp(r.panTargetZ, -lz, lz);
     };
     const panBy = (dx, dy) => {
-      const scale = 56 / (r.zoomTarget * Math.max(1, mount.clientHeight));
-      r.panTargetX -= dx * scale;
-      r.panTargetZ -= dy * scale;
+      const scale = (2 * r.dist * TAN) / Math.max(1, mount.clientHeight);
+      const rx = Math.cos(r.yaw), rz = -Math.sin(r.yaw);   // «вправо» экрана в мире
+      const ux = -Math.sin(r.yaw), uz = -Math.cos(r.yaw);  // «вверх» экрана в мире
+      r.panTargetX += (-rx * dx + ux * dy) * scale;
+      r.panTargetZ += (-rz * dx + uz * dy) * scale;
       clampTarget();
     };
-    const zoomBy = f => { r.zoomTarget = clamp(r.zoomTarget * f, MIN_ZOOM, MAX_ZOOM); clampTarget(); };
+    const zoomBy = f => { r.distTarget = clamp(r.distTarget / f, MIN_D, MAX_D); clampTarget(); };
 
     if (controlsRef) {
       controlsRef.current = {
         zoomBy,
         resetView: () => {
-          r.panTargetX = 0; r.panTargetZ = 0; r.zoomTarget = 0.9;
+          r.panTargetX = 0; r.panTargetZ = 0; r.distTarget = START_D;
           r.yaw = 0.32; r.pitch = 0.82; r.updateCameraPose();
         }
       };
@@ -742,7 +728,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       const dx = e.clientX - lastX, dy = e.clientY - lastY;
       if (rotating) {
         r.yaw -= dx * 0.008;
-        r.pitch = clamp(r.pitch - dy * 0.006, 0.55, 1.18);
+        r.pitch = clamp(r.pitch - dy * 0.006, 0.30, 1.25);
         r.updateCameraPose();
         lastX = e.clientX; lastY = e.clientY;
         return;
@@ -758,8 +744,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       if (!moved) doClick(e.clientX, e.clientY);
       down = false; mount.style.cursor = "grab";
     };
-    const wheelFn = e => { e.preventDefault(); zoomBy(Math.exp(-e.deltaY * 0.001)); };
-    const dblFn = () => zoomBy(1.45);
+    const wheelFn = e => { e.preventDefault(); zoomBy(Math.exp(-e.deltaY * 0.0012)); };
+    const dblFn = () => zoomBy(1.5);
 
     const touchStart = e => {
       if (e.touches.length === 1) r.touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, m: false };
@@ -782,7 +768,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
         if (r.pinch) zoomBy(Math.exp((d - r.pinch) * 0.002));
         if (r.twoFinger) {
           const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-          r.pitch = clamp(r.pitch - (cy - r.twoFinger.cy) * 0.002, 0.55, 1.18);
+          r.pitch = clamp(r.pitch - (cy - r.twoFinger.cy) * 0.002, 0.30, 1.25);
           r.yaw -= (dx - r.twoFinger.dx) * 0.002;
           r.updateCameraPose();
         }
@@ -880,7 +866,6 @@ function Hud({ profile, supplyEta, now, onInv, onCase }) {
     </div>
   );
 }
-
 function UnitChip({ u, sel, onClick }) {
   const dead = u.hp <= 0;
   return (
@@ -895,7 +880,6 @@ function UnitChip({ u, sel, onClick }) {
     </div>
   );
 }
-
 function Modal({ title, onClose, children }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.72)", zIndex: 50, display: "flex", alignItems: "flex-end" }} onClick={onClose}>
@@ -907,8 +891,7 @@ function Modal({ title, onClose, children }) {
     </div>
   );
 }
-
-function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, onBuild, onClose, result, canInteract, busy }) {
+function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, onBuild, onClose, result, canInteract, busy, freePlace }) {
   const ti = TYPES[t.type], isOwn = t.owner === "me";
   const slots = BUILD_SLOTS[t.type] || [];
   const usable = profile.units.filter(u => u.hp > 0);
@@ -943,7 +926,8 @@ function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, o
 
         {!isOwn && !ti.impassable && (
           <>
-            {!canInteract && <div style={{ fontSize: 12, color: PAL.muted, marginBottom: 8 }}>Можно атаковать только соседние клетки.</div>}
+            {!canInteract && <div style={{ fontSize: 12, color: PAL.muted, marginBottom: 8 }}>Можно атаковать только соседние со своими клетки.</div>}
+            {canInteract && freePlace && <div style={{ fontSize: 12, color: PAL.gold, marginBottom: 8 }}>🎁 Первая клетка — куда угодно!</div>}
             {canInteract && (
               <>
                 <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Юнит в атаку (⚡−1):</div>
@@ -964,7 +948,6 @@ function TerritoryModal({ t, building, profile, selUnit, setSelUnit, onAttack, o
     </div>
   );
 }
-
 function InventoryModal({ profile, onClose }) {
   return (
     <Modal title="🎒 Инвентарь" onClose={onClose}>
@@ -983,22 +966,22 @@ function InventoryModal({ profile, onClose }) {
     </Modal>
   );
 }
-
 function CaseModal({ servers, caseCost, coins, onOpen, onClose }) {
   const [srv, setSrv] = useState(null);
   const [res, setRes] = useState(null), [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const cur = srv || servers[0]?.name;
+  const pretty = n => n ? n.charAt(0).toUpperCase() + n.slice(1) : n;
   const open = async () => {
     setBusy(true); setErr(""); setRes(null);
     try { setRes(await onOpen(cur)); } catch (e) { setErr(e.message); }
     setBusy(false);
   };
   return (
-    <Modal title="📦 Кейс сервера" onClose={onClose}>
+    <Modal title="📦 Кейсы серверов" onClose={onClose}>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
         {servers.map(s => (
           <button key={s.name} onClick={() => setSrv(s.name)} style={{ padding: "6px 12px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: "pointer", border: "1px solid " + (cur === s.name ? PAL.accent : PAL.border), background: cur === s.name ? "#2a1d4d" : "transparent", color: PAL.text }}>
-            {s.name} · {s.count} 👤
+            {pretty(s.name)} · {s.count} 👤
           </button>
         ))}
       </div>
@@ -1010,11 +993,10 @@ function CaseModal({ servers, caseCost, coins, onOpen, onClose }) {
         </div>
       )}
       {err && <div style={{ color: PAL.red, fontSize: 12, marginBottom: 8 }}>⚠️ {err}</div>}
-      <Btn disabled={busy || !cur || coins < caseCost} onClick={open}>{busy ? "Открываем…" : `Открыть кейс — ${caseCost} 🪙`}</Btn>
+      <Btn disabled={busy || !cur || coins < caseCost} onClick={open}>{busy ? "Открываем…" : `Открыть кейс «${pretty(cur)}» — ${caseCost} 🪙`}</Btn>
     </Modal>
   );
 }
-
 function BootScreen({ progress, text }) {
   const p = clamp(progress, 0, 100);
   return (
@@ -1103,6 +1085,7 @@ export default function App() {
   }, []);
 
   const reachable = useMemo(() => territories ? getReachable(territories) : new Set(), [territories, rev]);
+  const freePlace = !!profile && profile.owned.length === 0;
 
   const doAttack = async unitId => {
     if (!selected || busy) return;
@@ -1132,6 +1115,10 @@ export default function App() {
 
   if (!territories) return <BootScreen progress={load} text={load < 55 ? "Создаём карту…" : "Возводим горные хребты…"} />;
 
+  const canInteractNow = selected
+    ? (freePlace ? (!selected.owner && !TYPES[selected.type].impassable) : reachable.has(selected.id))
+    : false;
+
   return (
     <div style={{ height: "100dvh", background: PAL.bg, color: PAL.text, fontFamily: "-apple-system,system-ui,sans-serif", overflow: "hidden" }}>
       <MapScreen3D territories={territories} reachable={reachable} selectedId={selected?.id} rev={rev}
@@ -1142,8 +1129,8 @@ export default function App() {
       {profile && <Hud profile={profile} supplyEta={supplyEta} now={now} onInv={() => setScreen("inv")} onCase={() => setScreen("case")} />}
 
       <div style={{ position: "absolute", right: 12, bottom: 34, display: "flex", flexDirection: "column", gap: 8 }}>
-        <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1.3)}>＋</ZoomBtn>
-        <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1 / 1.3)}>－</ZoomBtn>
+        <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1.35)}>＋</ZoomBtn>
+        <ZoomBtn onClick={() => controlsRef.current?.zoomBy(1 / 1.35)}>－</ZoomBtn>
         <ZoomBtn onClick={() => controlsRef.current?.resetView()}>⌂</ZoomBtn>
       </div>
 
@@ -1151,7 +1138,7 @@ export default function App() {
         <TerritoryModal t={selected} building={overlay.buildings[selected.id]} profile={profile}
           selUnit={selUnit} setSelUnit={setSelUnit} onAttack={doAttack} onBuild={doBuild} busy={busy}
           onClose={() => { setSelected(null); setResult(null); }}
-          result={result} canInteract={reachable.has(selected.id)} />
+          result={result} canInteract={canInteractNow} freePlace={freePlace} />
       )}
       {screen === "inv" && profile && <InventoryModal profile={profile} onClose={() => setScreen(null)} />}
       {screen === "case" && profile && (
