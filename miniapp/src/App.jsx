@@ -28,6 +28,7 @@ const BASE_H = 0.16, TOP_THICK = 0.06, SURFACE_EPS = 0.035;
 const CHUNK_TILES = 24, FAR_TILES = 48;
 const MIN_D = 45, MAX_D = 320, START_D = 240;   // дистанция камеры = зум
 const FOV = 50, TAN = Math.tan((FOV / 2) * Math.PI / 180);
+const autoPitch = d => 1.50 - clamp((d - MIN_D) / (MAX_D - MIN_D), 0, 1) * 0.78;
 const PAN_MARGIN = 260;
 const FOG_COLOR = 0x0c1f27, FOG_NEAR = 220, FOG_FAR = 2100;
 
@@ -441,7 +442,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
     r.camera = camera;
     r.targetX = 0; r.targetZ = 0; r.panTargetX = 0; r.panTargetZ = 0;
     r.dist = START_D; r.distTarget = START_D;
-    r.yaw = 0.32; r.pitch = 0.82;
+    r.yaw = 0.32; r.pitchOff = 0;
 
     const updateCameraPose = () => {
       const cp = Math.cos(r.pitch);
@@ -591,6 +592,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       r.targetX += (r.panTargetX - r.targetX) * 0.18;
       r.targetZ += (r.panTargetZ - r.targetZ) * 0.18;
       r.dist += (r.distTarget - r.dist) * 0.15;
+      r.pitch = clamp(autoPitch(r.dist) + (r.pitchOff || 0), 0.35, 1.55);
       updateCameraPose();
 
       if (!r.farMode && r.dist > 280) { r.farMode = true; r.refreshChunks(); }
@@ -686,7 +688,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
         zoomBy,
         resetView: () => {
           r.panTargetX = 0; r.panTargetZ = 0; r.distTarget = START_D;
-          r.yaw = 0.32; r.pitch = 0.82; r.updateCameraPose();
+          r.yaw = 0.32; r.pitchOff = 0; r.updateCameraPose();
         }
       };
     }
@@ -718,38 +720,39 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       }
     };
 
-    let down = false, moved = false, lastX = 0, lastY = 0, rotating = false;
+    let down = false, moved = false, movedDist = 0, downTime = 0, lastX = 0, lastY = 0, rotating = false;
     const downFn = e => {
       if (e.button !== undefined && e.button === 2) { rotating = true; moved = false; lastX = e.clientX; lastY = e.clientY; mount.style.cursor = "ew-resize"; return; }
       if (e.button !== undefined && e.button !== 0) return;
-      down = true; moved = false; lastX = e.clientX; lastY = e.clientY; mount.style.cursor = "grabbing";
+      down = true; moved = false; movedDist = 0; downTime = performance.now(); lastX = e.clientX; lastY = e.clientY; mount.style.cursor = "grabbing";
     };
     const moveFn = e => {
       const dx = e.clientX - lastX, dy = e.clientY - lastY;
       if (rotating) {
         r.yaw -= dx * 0.008;
-        r.pitch = clamp(r.pitch - dy * 0.006, 0.30, 1.25);
+        r.pitchOff = clamp((r.pitchOff || 0) - dy * 0.006, -0.6, 0.6);
         r.updateCameraPose();
         lastX = e.clientX; lastY = e.clientY;
         return;
       }
       if (!down) return;
-      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      movedDist += Math.abs(dx) + Math.abs(dy);
+      if (movedDist > 6) moved = true;
       panBy(dx, dy);
       lastX = e.clientX; lastY = e.clientY;
     };
     const upFn = e => {
       if (rotating) { rotating = false; mount.style.cursor = "grab"; return; }
       if (!down) return;
-      if (!moved) doClick(e.clientX, e.clientY);
+      if (!moved && performance.now() - downTime < 700) doClick(e.clientX, e.clientY);
       down = false; mount.style.cursor = "grab";
     };
     const wheelFn = e => { e.preventDefault(); zoomBy(Math.exp(-e.deltaY * 0.0012)); };
     const dblFn = () => zoomBy(1.5);
 
     const touchStart = e => {
-      if (e.touches.length === 1) r.touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, m: false };
-      else if (e.touches.length === 2) {
+      if (e.touches.length === 1) r.touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, m: false, d: 0, t: Date.now() };
+      else if (e.touches.length >= 2) { r.touch = null;
         const dx = e.touches[0].clientX - e.touches[1].clientX, dy = e.touches[0].clientY - e.touches[1].clientY;
         r.pinch = Math.hypot(dx, dy);
         r.twoFinger = { dx, dy, cy: (e.touches[0].clientY + e.touches[1].clientY) / 2 };
@@ -759,7 +762,8 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       e.preventDefault();
       if (e.touches.length === 1 && r.touch) {
         const dx = e.touches[0].clientX - r.touch.x, dy = e.touches[0].clientY - r.touch.y;
-        if (Math.abs(dx) + Math.abs(dy) > 4) r.touch.m = true;
+        r.touch.d += Math.abs(dx) + Math.abs(dy);
+        if (r.touch.d > 12) r.touch.m = true;
         panBy(dx, dy);
         r.touch.x = e.touches[0].clientX; r.touch.y = e.touches[0].clientY;
       } else if (e.touches.length === 2) {
@@ -768,7 +772,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
         if (r.pinch) zoomBy(Math.exp((d - r.pinch) * 0.002));
         if (r.twoFinger) {
           const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-          r.pitch = clamp(r.pitch - (cy - r.twoFinger.cy) * 0.002, 0.30, 1.25);
+          r.pitchOff = clamp((r.pitchOff || 0) - (cy - r.twoFinger.cy) * 0.002, -0.6, 0.6);
           r.yaw -= (dx - r.twoFinger.dx) * 0.002;
           r.updateCameraPose();
         }
@@ -777,7 +781,7 @@ function MapScreen3D({ territories, onSelect, selectedId, reachable, onReady, on
       }
     };
     const touchEnd = () => {
-      if (r.touch && !r.touch.m) doClick(r.touch.x, r.touch.y);
+      if (r.touch && !r.touch.m && r.touch.d < 14 && Date.now() - r.touch.t < 700) doClick(r.touch.x, r.touch.y);
       r.touch = null; r.pinch = 0; r.twoFinger = null;
     };
     const leaveFn = () => { down = false; rotating = false; mount.style.cursor = "grab"; };
